@@ -1,7 +1,6 @@
 import pybithumb
 import time
 import uuid
-import json
 import os
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Updater, CallbackQueryHandler
@@ -33,7 +32,10 @@ def r(x, n=4):
         return 0.0
 
 def fmt(x):
-    return f"{float(x):.6f}"
+    try:
+        return f"{float(x):.6f}"
+    except:
+        return "0.000000"
 
 # ================= 안전 조회 =================
 def get_price(ticker):
@@ -79,7 +81,7 @@ def pre_buy_check(ticker, coin):
 # ================= 분석 =================
 def analyze_coin(ticker):
     df = get_ohlcv(ticker)
-    if df is None:
+    if df is None or len(df) < 20:
         return None
 
     price = get_price(ticker)
@@ -103,27 +105,22 @@ def analyze_coin(ticker):
     score = 0
     entry_score = 0
 
-    # 지지선
     if support * 0.97 <= price <= support * 1.03:
         score += 2
 
-    # 추세
     if ma5 > ma10:
         score += 1
         entry_score += 1
 
-    # RSI
     if 30 <= rsi <= 60:
         score += 1
 
-    # 거래량
     if vol_ratio >= 0.8:
         score += 1
         entry_score += 1
     else:
         entry_score -= 1
 
-    # 하락 방지
     if detect_bad_flow(df):
         entry_score -= 2
 
@@ -151,7 +148,10 @@ def analyze_coin(ticker):
 
 # ================= 텔레그램 =================
 def send(msg, keyboard=None):
-    bot.send_message(chat_id=CHAT_ID, text=msg, reply_markup=keyboard)
+    try:
+        bot.send_message(chat_id=CHAT_ID, text=msg, reply_markup=keyboard)
+    except Exception as e:
+        print(f"[텔레그램 오류] {e}")
 
 # ================= 추천 =================
 def scan():
@@ -167,6 +167,7 @@ def scan():
             candidates.append(coin)
 
     if not candidates:
+        print("조건 맞는 코인 없음")
         return
 
     coin = candidates[0]
@@ -181,10 +182,10 @@ def scan():
 
 지금 들어가도 되는 자리야
 
-현재가: {coin['price']}
-진입가: {coin['entry']}
-손절가: {coin['stop']}
-목표가: {coin['tp']}
+현재가: {fmt(coin['price'])}
+진입가: {fmt(coin['entry'])}
+손절가: {fmt(coin['stop'])}
+목표가: {fmt(coin['tp'])}
 
 👉 짧게 먹고 빠지는 전략
 """
@@ -210,12 +211,12 @@ def handle(update, context):
         send(f"❌ 매수 취소\n{msg}")
         return
 
-    qty = coin["qty"]
-    bithumb.buy_market_order(ticker, qty)
-
-    active_positions[ticker] = coin
-
-    send(f"✅ 매수 완료\n{ticker}")
+    try:
+        bithumb.buy_market_order(ticker, coin["qty"])
+        active_positions[ticker] = coin
+        send(f"✅ 매수 완료\n{ticker}")
+    except Exception as e:
+        send(f"❌ 매수 실패\n{e}")
 
 # ================= 감시 =================
 def monitor():
@@ -239,16 +240,29 @@ def monitor():
 
 # ================= 실행 =================
 updater = Updater(token=TELEGRAM_TOKEN, use_context=True)
-updater.dispatcher.add_handler(CallbackQueryHandler(handle))
-updater.start_polling()
+dispatcher = updater.dispatcher
+dispatcher.add_handler(CallbackQueryHandler(handle))
+
+# ⭐⭐⭐ 핵심: Conflict 해결 ⭐⭐⭐
+updater.start_polling(drop_pending_updates=True)
 
 print("🚀 실전형 시스템 실행")
 
+last_position_check = 0
+
 while True:
+    now = time.time()
+
     try:
         scan()
-        monitor()
     except Exception as e:
-        print(e)
+        print(f"[스캔 오류] {e}")
 
-    time.sleep(60)
+    if now - last_position_check >= POSITION_CHECK_INTERVAL:
+        try:
+            monitor()
+        except Exception as e:
+            print(f"[감시 오류] {e}")
+        last_position_check = now
+
+    time.sleep(SCAN_INTERVAL)
