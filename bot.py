@@ -2,6 +2,7 @@ import os
 import time
 import uuid
 import traceback
+from datetime import datetime
 import pybithumb
 
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
@@ -18,10 +19,15 @@ SCAN_INTERVAL = 60
 POSITION_CHECK_INTERVAL = 10
 ALERT_COOLDOWN = 1200      # 같은 코인 재알림 제한 20분
 BUTTON_EXPIRE = 600        # 버튼 유효 시간 10분
-TOP_TICKERS = 40           # 살짝 늘림
+TOP_TICKERS = 40
 
 FIXED_ENTRY_KRW = 11000
 MIN_ORDER = 5000
+
+# ===== 자동매수 설정 =====
+AUTO_BUY = True
+AUTO_BUY_START_HOUR = 9
+AUTO_BUY_END_HOUR = 18   # 18시는 포함 안 함 → 09:00~17:59
 
 # ================= 기본 체크 =================
 if not TELEGRAM_TOKEN or not CHAT_ID or not API_KEY or not API_SECRET:
@@ -75,6 +81,13 @@ def send(msg, keyboard=None):
     except Exception as e:
         print(f"[텔레그램 오류] {e}")
 
+def is_weekday_auto_time():
+    now = datetime.now()
+    # 월=0 ~ 일=6
+    is_weekday = now.weekday() < 5
+    is_time_ok = AUTO_BUY_START_HOUR <= now.hour < AUTO_BUY_END_HOUR
+    return is_weekday and is_time_ok
+
 # ================= 데이터 조회 =================
 def get_price(ticker):
     try:
@@ -110,12 +123,10 @@ def calculate_rsi(df, period=14):
     return 100 - (100 / (1 + rs))
 
 def detect_bad_flow(df):
-    # 최근 3개 종가가 연속 하락이면 안 좋은 흐름
     closes = list(df.tail(3)["close"])
     return len(closes) == 3 and closes[2] < closes[1] < closes[0]
 
 def detect_rebound(df):
-    # 눌렸다가 마지막에 다시 들려는 움직임
     closes = list(df.tail(5)["close"])
     if len(closes) < 5:
         return False
@@ -130,14 +141,13 @@ def detect_recent_pump(df):
     return ((end - start) / start) * 100 if start > 0 else 0.0
 
 def detect_volume_recovery(df):
-    # 최근 3개 평균 거래량이 직전 10개 평균보다 살아나는지
     try:
         recent_vol = float(df["volume"].tail(3).mean())
         prev_vol = float(df["volume"].tail(13).head(10).mean())
         if prev_vol <= 0:
             return False, 0.0
         ratio = recent_vol / prev_vol
-        return ratio >= 1.15, ratio
+        return ratio >= 1.05, ratio
     except Exception:
         return False, 0.0
 
@@ -251,7 +261,7 @@ def analyze_coin(ticker):
         entry_score -= 1
         warnings.append(f"- 거래량이 약해서 힘이 부족할 수 있어 ({vol_ratio:.2f}배)")
 
-    # 5) 다음 단계 필터: 거래량 회복
+    # 5) 거래량 회복
     if volume_recovery_ok:
         entry_score += 1
         reasons.append(f"- 최근 거래량이 다시 살아나는 중이야 ({volume_recovery_ratio:.2f}배)")
@@ -286,7 +296,7 @@ def analyze_coin(ticker):
     stop = support * 0.97
     tp = entry * 1.025
 
-    # ===== 핵심 버그 방지 =====
+    # 이미 늦은 자리 제거
     if price >= tp:
         return None
 
@@ -306,19 +316,17 @@ def analyze_coin(ticker):
         entry_score -= 2
         warnings.append(f"- 먹을 자리보다 잃을 위험이 조금 더 커 ({rr:.2f})")
 
-    # ===== 쓰레기 필터 =====
-    # 거래량이 너무 죽어있으면 아예 제외
+    # 쓰레기 필터
     if vol_ratio < 0.30:
         return None
 
-    # 진입 적합도가 너무 낮으면 알림 자체 제외
     if entry_score < 0:
         return None
 
     if qty <= 0:
         return None
 
-    # ================= 상태 판정 =================
+    # 상태 판정
     if score >= 2 and entry_score >= 3:
         status = "진입 가능"
     elif score >= 2:
@@ -341,6 +349,52 @@ def analyze_coin(ticker):
         "reason": "\n".join(reasons) if reasons else "- 없음",
         "warning": "\n".join(warnings) if warnings else "- 특별한 경고 없음",
     }
+
+# ================= 자동매수 =================
+def try_auto_buy(coin):
+    ticker = coin["ticker"]
+
+    if ticker in active_positions:
+        return False, f"{ticker}는 이미 들고 있어"
+
+    if active_positions:
+        return False, "이미 다른 코인 보유 중이야"
+
+    if not AUTO_BUY:
+        return False, "자동매수가 꺼져 있어"
+
+    if not is_weekday_auto_time():
+        return False, "자동매수 시간대가 아니야"
+
+    ok, msg = pre_buy_check(ticker, coin)
+    if not ok:
+        return False, msg
+
+    try:
+        result = bithumb.buy_market_order(ticker, coin["qty"])
+        time.sleep(1)
+
+        real_balance = get_balance(ticker)
+        if real_balance <= 0:
+            return False, f"매수는 시도했는데 실제 잔고 확인이 안 돼 / 응답: {result}"
+
+        active_positions[ticker] = {
+            **coin,
+            "qty": real_balance
+        }
+
+        send(
+            f"🤖 자동매수 완료\n"
+            f"{ticker}\n"
+            f"보유수량: {real_balance:.8f}\n"
+            f"진입가: {fmt_price(coin['entry'])}\n"
+            f"목표가: {fmt_price(coin['tp'])}\n"
+            f"손절가: {fmt_price(coin['stop'])}\n"
+            f"자동매수 시간: 평일 {AUTO_BUY_START_HOUR}:00~{AUTO_BUY_END_HOUR}:00"
+        )
+        return True, "자동매수 완료"
+    except Exception as e:
+        return False, str(e)
 
 # ================= 스캔 =================
 def scan():
@@ -385,6 +439,14 @@ def scan():
     coin = candidates[0]
     recent_alerts[coin["ticker"]] = now
 
+    # 자동매수 먼저 시도
+    if coin["status"] == "진입 가능" and AUTO_BUY and is_weekday_auto_time():
+        success, msg = try_auto_buy(coin)
+        if success:
+            return
+        else:
+            print(f"[자동매수 미실행] {coin['ticker']} / {msg}")
+
     reply_markup = None
     status_text = ""
 
@@ -400,10 +462,17 @@ def scan():
     else:
         status_text = "⏳ 아직은 관찰만 추천"
 
+    auto_text = ""
+    if AUTO_BUY:
+        if is_weekday_auto_time():
+            auto_text = f"\n자동매수: ON (평일 {AUTO_BUY_START_HOUR}:00~{AUTO_BUY_END_HOUR}:00)"
+        else:
+            auto_text = f"\n자동매수: 대기 중 (평일 {AUTO_BUY_START_HOUR}:00~{AUTO_BUY_END_HOUR}:00만 실행)"
+
     msg = f"""
 🔥 {coin['ticker']}
 
-{status_text}
+{status_text}{auto_text}
 
 현재가: {fmt_price(coin['price'])}
 지지선: {fmt_price(coin['support'])}
@@ -426,7 +495,7 @@ def scan():
 """
     send(msg, reply_markup)
 
-# ================= 매수 =================
+# ================= 수동 매수 =================
 def handle(update, context):
     query = update.callback_query
     query.answer()
@@ -453,6 +522,10 @@ def handle(update, context):
         send(f"{ticker}는 이미 들고 있어")
         return
 
+    if active_positions:
+        send("이미 다른 코인 보유 중이야")
+        return
+
     ok, msg = pre_buy_check(ticker, coin)
     if not ok:
         send(f"🛡️ 매수 취소: {msg}")
@@ -473,7 +546,7 @@ def handle(update, context):
         }
 
         send(
-            f"✅ 매수 완료\n"
+            f"✅ 수동 매수 완료\n"
             f"{ticker}\n"
             f"보유수량: {real_balance:.8f}\n"
             f"목표가: {fmt_price(coin['tp'])}\n"
