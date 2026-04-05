@@ -1,0 +1,3 @@
+pybithumb
+python-telegram-bot<20
+pandas
