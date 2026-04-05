@@ -18,7 +18,7 @@ SCAN_INTERVAL = 60
 POSITION_CHECK_INTERVAL = 10
 ALERT_COOLDOWN = 1200      # 같은 코인 재알림 제한 20분
 BUTTON_EXPIRE = 600        # 버튼 유효 시간 10분
-TOP_TICKERS = 30
+TOP_TICKERS = 40           # 살짝 늘림
 
 FIXED_ENTRY_KRW = 11000
 MIN_ORDER = 5000
@@ -41,21 +41,24 @@ def r(x, n=4):
     except Exception:
         return 0.0
 
-def fmt(x):
+def fmt_price(x):
+    """
+    빗썸 앱 느낌으로 표시:
+    - 1원 이상이면 정수
+    - 1원 미만이면 소수점 표시
+    """
     try:
         x = float(x)
     except Exception:
-        return "0.000000"
+        return "0"
 
-    if x >= 1000:
+    if x >= 1:
         return f"{x:,.0f}"
-    elif x >= 100:
-        return f"{x:,.2f}"
-    elif x >= 1:
-        return f"{x:,.4f}"
     elif x >= 0.1:
-        return f"{x:,.5f}"
+        return f"{x:,.4f}"
     elif x >= 0.01:
+        return f"{x:,.5f}"
+    elif x >= 0.001:
         return f"{x:,.6f}"
     else:
         return f"{x:,.8f}"
@@ -85,7 +88,7 @@ def get_price(ticker):
 def get_ohlcv(ticker):
     try:
         df = pybithumb.get_ohlcv(ticker)
-        if df is None or len(df) < 20:
+        if df is None or len(df) < 30:
             return None
         return df
     except Exception:
@@ -107,10 +110,12 @@ def calculate_rsi(df, period=14):
     return 100 - (100 / (1 + rs))
 
 def detect_bad_flow(df):
+    # 최근 3개 종가가 연속 하락이면 안 좋은 흐름
     closes = list(df.tail(3)["close"])
     return len(closes) == 3 and closes[2] < closes[1] < closes[0]
 
 def detect_rebound(df):
+    # 눌렸다가 마지막에 다시 들려는 움직임
     closes = list(df.tail(5)["close"])
     if len(closes) < 5:
         return False
@@ -123,6 +128,18 @@ def detect_recent_pump(df):
     start = float(recent["close"].iloc[0])
     end = float(recent["close"].iloc[-1])
     return ((end - start) / start) * 100 if start > 0 else 0.0
+
+def detect_volume_recovery(df):
+    # 최근 3개 평균 거래량이 직전 10개 평균보다 살아나는지
+    try:
+        recent_vol = float(df["volume"].tail(3).mean())
+        prev_vol = float(df["volume"].tail(13).head(10).mean())
+        if prev_vol <= 0:
+            return False, 0.0
+        ratio = recent_vol / prev_vol
+        return ratio >= 1.15, ratio
+    except Exception:
+        return False, 0.0
 
 # ================= 버튼 정리 =================
 def cleanup_buttons():
@@ -189,6 +206,7 @@ def analyze_coin(ticker):
 
     pump = detect_recent_pump(df)
     rebound = detect_rebound(df)
+    volume_recovery_ok, volume_recovery_ratio = detect_volume_recovery(df)
 
     score = 0
     entry_score = 0
@@ -222,7 +240,7 @@ def analyze_coin(ticker):
     else:
         warnings.append(f"- 이미 좀 오른 상태일 수 있어 ({rsi:.2f})")
 
-    # 4) 거래량
+    # 4) 거래량 기본 체크
     if vol_ratio >= 0.75:
         score += 1
         entry_score += 1
@@ -233,12 +251,19 @@ def analyze_coin(ticker):
         entry_score -= 1
         warnings.append(f"- 거래량이 약해서 힘이 부족할 수 있어 ({vol_ratio:.2f}배)")
 
-    # 5) 연속 하락 흐름 방지
+    # 5) 다음 단계 필터: 거래량 회복
+    if volume_recovery_ok:
+        entry_score += 1
+        reasons.append(f"- 최근 거래량이 다시 살아나는 중이야 ({volume_recovery_ratio:.2f}배)")
+    else:
+        warnings.append(f"- 최근 거래량 회복은 아직 약해 ({volume_recovery_ratio:.2f}배)")
+
+    # 6) 연속 하락 흐름 방지
     if detect_bad_flow(df):
         entry_score -= 2
         warnings.append("- 최근 종가 흐름이 계속 밀리고 있어서 조심해야 해")
 
-    # 6) 급등 추격 방지
+    # 7) 급등 추격 방지
     if pump >= 5.0:
         score -= 2
         entry_score -= 2
@@ -249,7 +274,7 @@ def analyze_coin(ticker):
     else:
         reasons.append(f"- 최근 급하게 오른 상태는 아니야 ({pump:.2f}%)")
 
-    # 7) 눌림 후 반등 확인
+    # 8) 눌림 후 반등 확인
     if rebound:
         entry_score += 2
         reasons.append("- 눌렸다가 다시 반등하려는 움직임이 보여")
@@ -262,11 +287,9 @@ def analyze_coin(ticker):
     tp = entry * 1.025
 
     # ===== 핵심 버그 방지 =====
-    # 이미 목표가 이상이면 늦은 자리라 추천 금지
     if price >= tp:
         return None
 
-    # 현재가가 진입가보다 너무 높으면 추천 금지
     if price > entry * 1.02:
         return None
 
@@ -283,11 +306,20 @@ def analyze_coin(ticker):
         entry_score -= 2
         warnings.append(f"- 먹을 자리보다 잃을 위험이 조금 더 커 ({rr:.2f})")
 
+    # ===== 쓰레기 필터 =====
+    # 거래량이 너무 죽어있으면 아예 제외
+    if vol_ratio < 0.30:
+        return None
+
+    # 진입 적합도가 너무 낮으면 알림 자체 제외
+    if entry_score < 0:
+        return None
+
     if qty <= 0:
         return None
 
     # ================= 상태 판정 =================
-    if score >= 2 and entry_score >= 2:
+    if score >= 2 and entry_score >= 3:
         status = "진입 가능"
     elif score >= 2:
         status = "관찰 추천"
@@ -341,7 +373,6 @@ def scan():
         print("조건 맞는 코인 없음")
         return
 
-    # 진입 가능 우선, 그 다음 점수순
     candidates.sort(
         key=lambda x: (
             1 if x["status"] == "진입 가능" else 0,
@@ -374,13 +405,13 @@ def scan():
 
 {status_text}
 
-현재가: {fmt(coin['price'])}
-지지선: {fmt(coin['support'])}
-저항선: {fmt(coin['resistance'])}
+현재가: {fmt_price(coin['price'])}
+지지선: {fmt_price(coin['support'])}
+저항선: {fmt_price(coin['resistance'])}
 
-추천 진입가: {fmt(coin['entry'])}
-손절가: {fmt(coin['stop'])}
-목표가: {fmt(coin['tp'])}
+추천 진입가: {fmt_price(coin['entry'])}
+손절가: {fmt_price(coin['stop'])}
+목표가: {fmt_price(coin['tp'])}
 
 추천 점수: {coin['score']}
 진입 적합도: {coin['entry_score']}
@@ -445,8 +476,8 @@ def handle(update, context):
             f"✅ 매수 완료\n"
             f"{ticker}\n"
             f"보유수량: {real_balance:.8f}\n"
-            f"목표가: {fmt(coin['tp'])}\n"
-            f"손절가: {fmt(coin['stop'])}"
+            f"목표가: {fmt_price(coin['tp'])}\n"
+            f"손절가: {fmt_price(coin['stop'])}"
         )
     except Exception as e:
         send(f"❌ 매수 실패\n{e}")
@@ -473,8 +504,8 @@ def monitor():
                 send(
                     f"🚨 손절\n"
                     f"{ticker}\n"
-                    f"현재가: {fmt(price)}\n"
-                    f"손절기준: {fmt(coin['stop'])}\n"
+                    f"현재가: {fmt_price(price)}\n"
+                    f"손절기준: {fmt_price(coin['stop'])}\n"
                     f"수익률: {fmt_pct(pnl)}"
                 )
                 remove.append(ticker)
@@ -488,8 +519,8 @@ def monitor():
                 send(
                     f"🎯 익절 완료\n"
                     f"{ticker}\n"
-                    f"현재가: {fmt(price)}\n"
-                    f"목표가: {fmt(coin['tp'])}\n"
+                    f"현재가: {fmt_price(price)}\n"
+                    f"목표가: {fmt_price(coin['tp'])}\n"
                     f"수익률: {fmt_pct(pnl)}"
                 )
                 remove.append(ticker)
