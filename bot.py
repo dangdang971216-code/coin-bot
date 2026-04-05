@@ -83,8 +83,7 @@ def send(msg, keyboard=None):
 
 def is_weekday_auto_time():
     now = datetime.now()
-    # 월=0 ~ 일=6
-    is_weekday = now.weekday() < 5
+    is_weekday = now.weekday() < 5  # 월=0 ~ 금=4
     is_time_ok = AUTO_BUY_START_HOUR <= now.hour < AUTO_BUY_END_HOUR
     return is_weekday and is_time_ok
 
@@ -130,6 +129,7 @@ def detect_rebound(df):
     closes = list(df.tail(5)["close"])
     if len(closes) < 5:
         return False
+    # 눌렸다가 마지막에 다시 드는지
     return closes[-3] > closes[-2] and closes[-1] > closes[-2]
 
 def detect_recent_pump(df):
@@ -147,7 +147,7 @@ def detect_volume_recovery(df):
         if prev_vol <= 0:
             return False, 0.0
         ratio = recent_vol / prev_vol
-        return ratio >= 1.05, ratio
+        return ratio >= 1.00, ratio   # 완화
     except Exception:
         return False, 0.0
 
@@ -250,18 +250,18 @@ def analyze_coin(ticker):
     else:
         warnings.append(f"- 이미 좀 오른 상태일 수 있어 ({rsi:.2f})")
 
-    # 4) 거래량 기본 체크
-    if vol_ratio >= 0.75:
+    # 4) 거래량 기본 체크 (완화)
+    if vol_ratio >= 0.65:
         score += 1
         entry_score += 1
         reasons.append(f"- 거래량이 평소보다 들어오고 있어 ({vol_ratio:.2f}배)")
-    elif vol_ratio >= 0.55:
+    elif vol_ratio >= 0.45:
         reasons.append(f"- 거래량은 아주 나쁘진 않아 ({vol_ratio:.2f}배)")
     else:
         entry_score -= 1
         warnings.append(f"- 거래량이 약해서 힘이 부족할 수 있어 ({vol_ratio:.2f}배)")
 
-    # 5) 거래량 회복
+    # 5) 거래량 회복 (완화)
     if volume_recovery_ok:
         entry_score += 1
         reasons.append(f"- 최근 거래량이 다시 살아나는 중이야 ({volume_recovery_ratio:.2f}배)")
@@ -273,12 +273,12 @@ def analyze_coin(ticker):
         entry_score -= 2
         warnings.append("- 최근 종가 흐름이 계속 밀리고 있어서 조심해야 해")
 
-    # 7) 급등 추격 방지
-    if pump >= 5.0:
+    # 7) 급등 추격 방지 (완화)
+    if pump >= 6.0:
         score -= 2
         entry_score -= 2
         warnings.append(f"- 최근 너무 빨리 올라서 지금 사면 늦을 수 있어 ({pump:.2f}%)")
-    elif pump >= 2.5:
+    elif pump >= 3.0:
         entry_score -= 1
         warnings.append(f"- 최근 이미 좀 올라서 급하게 사면 불리할 수 있어 ({pump:.2f}%)")
     else:
@@ -296,7 +296,7 @@ def analyze_coin(ticker):
     stop = support * 0.97
     tp = entry * 1.025
 
-    # 이미 늦은 자리 제거
+    # 늦은 자리 제거
     if price >= tp:
         return None
 
@@ -326,10 +326,10 @@ def analyze_coin(ticker):
     if qty <= 0:
         return None
 
-    # 상태 판정
-    if score >= 2 and entry_score >= 3:
+    # ===== 상태 판정 완화 =====
+    if score >= 2 and entry_score >= 2:
         status = "진입 가능"
-    elif score >= 2:
+    elif score >= 1:
         status = "관찰 추천"
     else:
         status = "관망"
