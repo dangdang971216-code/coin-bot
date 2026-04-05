@@ -2,8 +2,8 @@ import os
 import time
 import uuid
 import traceback
-
 import pybithumb
+
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Updater, CallbackQueryHandler
 
@@ -14,18 +14,14 @@ CHAT_ID = os.getenv("CHAT_ID")
 API_KEY = os.getenv("API_KEY")
 API_SECRET = os.getenv("API_SECRET")
 
-SCAN_INTERVAL = 60                # 추천 스캔 주기
-POSITION_CHECK_INTERVAL = 10      # 보유 포지션 확인 주기
-ALERT_COOLDOWN = 1200             # 같은 코인 재알림 제한 (20분)
-BUTTON_EXPIRE = 600               # 버튼 유효 시간 (10분)
-TOP_TICKERS = 30                  # 거래량 상위 몇 개 볼지
+SCAN_INTERVAL = 60
+POSITION_CHECK_INTERVAL = 10
+ALERT_COOLDOWN = 1200
+BUTTON_EXPIRE = 600
+TOP_TICKERS = 30
 
 FIXED_ENTRY_KRW = 11000
 MIN_ORDER = 5000
-
-# ================= 기본 체크 =================
-if not TELEGRAM_TOKEN or not CHAT_ID or not API_KEY or not API_SECRET:
-    raise ValueError("환경변수(API_KEY, API_SECRET, TELEGRAM_TOKEN, CHAT_ID) 중 비어 있는 값이 있어요.")
 
 bot = Bot(token=TELEGRAM_TOKEN)
 bithumb = pybithumb.Bithumb(API_KEY, API_SECRET)
@@ -38,13 +34,13 @@ recent_alerts = {}
 def r(x, n=4):
     try:
         return round(float(x), n)
-    except Exception:
+    except:
         return 0.0
 
 def fmt(x):
     try:
         x = float(x)
-    except Exception:
+    except:
         return "0.000000"
 
     if x >= 1000:
@@ -63,24 +59,20 @@ def fmt(x):
 def fmt_pct(x):
     try:
         return f"{float(x):.2f}%"
-    except Exception:
+    except:
         return "0.00%"
 
-# ================= 텔레그램 =================
 def send(msg, keyboard=None):
     try:
         bot.send_message(chat_id=CHAT_ID, text=msg.strip(), reply_markup=keyboard)
     except Exception as e:
         print(f"[텔레그램 오류] {e}")
 
-# ================= 안전 조회 =================
+# ================= 데이터 =================
 def get_price(ticker):
     try:
-        price = pybithumb.get_current_price(ticker)
-        if price is None:
-            return -1
-        return float(price)
-    except Exception:
+        return float(pybithumb.get_current_price(ticker))
+    except:
         return -1
 
 def get_ohlcv(ticker):
@@ -89,15 +81,14 @@ def get_ohlcv(ticker):
         if df is None or len(df) < 20:
             return None
         return df
-    except Exception:
+    except:
         return None
 
 def get_balance(ticker):
     try:
-        bal = bithumb.get_balance(ticker)
-        return float(bal[0] or 0)
-    except Exception:
-        return 0.0
+        return float(bithumb.get_balance(ticker)[0] or 0)
+    except:
+        return 0
 
 # ================= 지표 =================
 def calculate_rsi(df, period=14):
@@ -108,66 +99,22 @@ def calculate_rsi(df, period=14):
     return 100 - (100 / (1 + rs))
 
 def detect_bad_flow(df):
-    # 최근 3개 종가가 연속 하락이면 안 좋은 흐름으로 판단
-    recent = df.tail(3)
-    closes = list(recent["close"])
-    if len(closes) < 3:
+    closes = list(df.tail(3)["close"])
+    return len(closes) == 3 and closes[2] < closes[1] < closes[0]
+
+def detect_rebound(df):
+    closes = list(df.tail(5)["close"])
+    if len(closes) < 5:
         return False
-    return closes[2] < closes[1] < closes[0]
+    return closes[-3] > closes[-2] and closes[-1] > closes[-2]
 
 def detect_recent_pump(df):
-    # 최근 4개 캔들 기준으로 너무 급하게 오른 건 아닌지 체크
     recent = df.tail(4)
-    if len(recent) < 4:
-        return 0.0
     start = float(recent["close"].iloc[0])
     end = float(recent["close"].iloc[-1])
-    if start <= 0:
-        return 0.0
-    return ((end - start) / start) * 100
+    return ((end - start) / start) * 100 if start > 0 else 0
 
-# ================= 버튼 정리 =================
-def cleanup_buttons():
-    now = time.time()
-    delete_keys = []
-    for k, v in button_data_store.items():
-        if now - v["created_at"] > BUTTON_EXPIRE:
-            delete_keys.append(k)
-
-    for k in delete_keys:
-        button_data_store.pop(k, None)
-
-# ================= 매수 전 방패 =================
-def pre_buy_check(ticker, coin):
-    price = get_price(ticker)
-    if price <= 0:
-        return False, "현재가를 불러오지 못했어"
-
-    # 지지선 이탈
-    if price < coin["support"]:
-        return False, "지지선 아래로 내려가서 위험한 자리야"
-
-    # 너무 늦게 눌렀을 때
-    if price > coin["entry"] * 1.015:
-        return False, "이미 많이 올라서 늦은 자리야"
-
-    # 추천 때보다 너무 많이 밀렸을 때
-    if price < coin["entry"] * 0.985:
-        return False, "추천 때보다 많이 내려서 흐름이 깨졌어"
-
-    # 목표가가 너무 가까우면 안 들어감
-    tp_gap_pct = ((coin["tp"] - price) / price) * 100 if price > 0 else 0
-    if tp_gap_pct < 0.6:
-        return False, "지금은 목표가가 너무 가까워서 먹을 자리가 적어"
-
-    # 손절폭이 너무 넓으면 거름
-    stop_gap_pct = ((coin["entry"] - coin["stop"]) / coin["entry"]) * 100 if coin["entry"] > 0 else 0
-    if stop_gap_pct > 5.0:
-        return False, "손절폭이 너무 커서 잃을 위험이 커"
-
-    return True, "OK"
-
-# ================= 코인 분석 =================
+# ================= 분석 =================
 def analyze_coin(ticker):
     df = get_ohlcv(ticker)
     if df is None:
@@ -177,102 +124,79 @@ def analyze_coin(ticker):
     if price <= 0:
         return None
 
-    recent20 = df.tail(20)
+    recent = df.tail(20)
 
-    support = float(recent20["low"].min())
-    resistance = float(recent20["high"].max())
+    support = float(recent["low"].min())
+    resistance = float(recent["high"].max())
 
-    ma5 = float(df["close"].rolling(5).mean().iloc[-1])
-    ma10 = float(df["close"].rolling(10).mean().iloc[-1])
+    ma5 = df["close"].rolling(5).mean().iloc[-1]
+    ma10 = df["close"].rolling(10).mean().iloc[-1]
 
-    rsi = float(calculate_rsi(df).iloc[-1])
+    rsi = calculate_rsi(df).iloc[-1]
 
-    vol = float(recent20["volume"].iloc[-1])
-    avg_vol = float(recent20["volume"].mean())
+    vol = recent["volume"].iloc[-1]
+    avg_vol = recent["volume"].mean()
     vol_ratio = vol / avg_vol if avg_vol > 0 else 0
 
-    recent_pump = detect_recent_pump(df)
+    pump = detect_recent_pump(df)
+    rebound = detect_rebound(df)
 
     score = 0
     entry_score = 0
     reasons = []
     warnings = []
 
-    # 1) 지지선 범위 완화
+    # 지지선
     if support * 0.965 <= price <= support * 1.04:
         score += 2
-        reasons.append("- 지지선 근처라 진입 자리로 볼 수 있어")
+        reasons.append("- 지지선 근처")
     elif support * 0.95 <= price <= support * 1.06:
         score += 1
-        reasons.append("- 지지선에서 아주 멀진 않아")
-    else:
-        warnings.append("- 지지선과 거리가 있어서 지금 바로 들어가긴 애매해")
 
-    # 2) 단기 추세
+    # 추세
     if ma5 > ma10:
         score += 1
         entry_score += 1
-        reasons.append("- 최근 흐름이 조금씩 좋아지고 있어")
-    else:
-        warnings.append("- 최근 흐름이 아직 강하진 않아")
 
-    # 3) RSI 범위 완화
+    # RSI
     if 28 <= rsi <= 65:
         score += 1
-        reasons.append(f"- 과열도 아니고 너무 약하지도 않은 상태야 ({rsi:.2f})")
-    elif rsi < 28:
-        warnings.append(f"- 아직 약한 흐름일 수 있어 ({rsi:.2f})")
-    else:
-        warnings.append(f"- 이미 좀 오른 상태일 수 있어 ({rsi:.2f})")
 
-    # 4) 거래량 조건 살짝 완화
+    # 거래량
     if vol_ratio >= 0.75:
         score += 1
         entry_score += 1
-        reasons.append(f"- 거래량이 평소보다 들어오고 있어 ({vol_ratio:.2f}배)")
-    elif vol_ratio >= 0.55:
-        reasons.append(f"- 거래량은 아주 나쁘진 않아 ({vol_ratio:.2f}배)")
-    else:
+    elif vol_ratio < 0.5:
         entry_score -= 1
-        warnings.append(f"- 거래량이 약해서 힘이 부족할 수 있어 ({vol_ratio:.2f}배)")
 
-    # 5) 연속 하락 흐름 방지
+    # 흐름 방지
     if detect_bad_flow(df):
         entry_score -= 2
-        warnings.append("- 최근 종가 흐름이 계속 밀리고 있어서 조심해야 해")
 
-    # 6) 급등 추격 방지
-    if recent_pump >= 5.0:
-        score -= 2
+    # 급등 방지
+    if pump > 5:
         entry_score -= 2
-        warnings.append(f"- 최근 너무 빨리 올라서 지금 사면 늦을 수 있어 ({recent_pump:.2f}%)")
-    elif recent_pump >= 2.5:
-        entry_score -= 1
-        warnings.append(f"- 최근 이미 좀 올라서 급하게 사면 불리할 수 있어 ({recent_pump:.2f}%)")
-    else:
-        reasons.append(f"- 최근 급하게 오른 상태는 아니야 ({recent_pump:.2f}%)")
 
-    # 진입 / 손절 / 익절
+    # 반등 확인
+    if rebound:
+        entry_score += 2
+    else:
+        entry_score += 0
+
     entry = support * 1.01
     stop = support * 0.97
     tp = entry * 1.025
 
-    qty = int(FIXED_ENTRY_KRW / entry) if entry > 0 else 0
+    qty = int(FIXED_ENTRY_KRW / entry)
 
-    # 최소 주문금액 맞추기
-    if qty > 0 and entry * qty < MIN_ORDER:
+    if qty * entry < MIN_ORDER:
         qty = int(MIN_ORDER / entry) + 1
 
-    # 손익비 체크
-    risk = entry - stop
-    reward = tp - entry
-    rr = reward / risk if risk > 0 else 0
-    if rr < 0.45:
-        entry_score -= 2
-        warnings.append(f"- 먹을 자리보다 잃을 위험이 조금 더 커 ({rr:.2f})")
-
-    if score >= 2 and entry_score >= 1 and qty > 0:
+    # 상태
+    if score >= 2 and entry_score >= 2:
         status = "진입 가능"
+    elif score >= 2:
+        status = "관찰 추천"
     else:
         status = "관망"
 
@@ -287,216 +211,142 @@ def analyze_coin(ticker):
         "support": r(support, 8),
         "resistance": r(resistance, 8),
         "score": score,
-        "entry_score": entry_score,
-        "reason": "\n".join(reasons) if reasons else "- 없음",
-        "warning": "\n".join(warnings) if warnings else "- 특별한 경고 없음",
+        "entry_score": entry_score
     }
 
-# ================= 추천 =================
+# ================= 매수 방어 =================
+def pre_buy_check(ticker, coin):
+    price = get_price(ticker)
+
+    if price < coin["support"]:
+        return False, "지지선 이탈"
+
+    if price > coin["entry"] * 1.015:
+        return False, "늦은 진입"
+
+    if price < coin["entry"] * 0.985:
+        return False, "흐름 깨짐"
+
+    return True, "OK"
+
+# ================= 스캔 =================
 def scan():
     if active_positions:
         return
 
-    cleanup_buttons()
+    tickers = pybithumb.get_tickers()
     now = time.time()
-
-    try:
-        tickers = pybithumb.get_tickers()
-    except Exception as e:
-        print(f"[티커 조회 오류] {e}")
-        return
-
-    if not tickers:
-        return
 
     candidates = []
 
-    # 너무 많으면 느려지니까 앞쪽 일부만
     for t in tickers[:TOP_TICKERS]:
         if t in recent_alerts and now - recent_alerts[t] < ALERT_COOLDOWN:
             continue
 
         coin = analyze_coin(t)
-        if coin and coin["status"] == "진입 가능":
+        if coin and coin["status"] != "관망":
             candidates.append(coin)
 
     if not candidates:
-        print("조건 맞는 코인 없음")
         return
 
-    # 점수 높은 순으로 정렬
-    candidates.sort(key=lambda x: (x["score"], x["entry_score"]), reverse=True)
-    coin = candidates[0]
+    candidates.sort(key=lambda x: (x["status"] == "진입 가능", x["score"], x["entry_score"]), reverse=True)
 
-    bid = str(uuid.uuid4())[:8]
-    button_data_store[bid] = {
-        "coin": coin,
-        "created_at": now
-    }
+    coin = candidates[0]
     recent_alerts[coin["ticker"]] = now
 
-    keyboard = [[InlineKeyboardButton("🔥 매수", callback_data=f"BUY|{bid}")]]
+    if coin["status"] == "진입 가능":
+        bid = str(uuid.uuid4())[:8]
+        button_data_store[bid] = coin
 
-    msg = f"""
+        keyboard = [[InlineKeyboardButton("🔥 매수", callback_data=f"BUY|{bid}")]]
+        markup = InlineKeyboardMarkup(keyboard)
+        text = "지금 들어가도 되는 자리"
+    else:
+        markup = None
+        text = "아직은 관찰"
+
+    send(f"""
 🔥 {coin['ticker']}
-
-✅ 지금 들어가도 되는 편
+{text}
 
 현재가: {fmt(coin['price'])}
-지지선: {fmt(coin['support'])}
-저항선: {fmt(coin['resistance'])}
-
-추천 진입가: {fmt(coin['entry'])}
+진입가: {fmt(coin['entry'])}
 손절가: {fmt(coin['stop'])}
 목표가: {fmt(coin['tp'])}
 
-추천 점수: {coin['score']}
-진입 적합도: {coin['entry_score']}
-고정 진입금: {FIXED_ENTRY_KRW}원
-수량: {coin['qty']}
-
-왜 괜찮아 보이냐면
-{coin['reason']}
-
-주의할 점
-{coin['warning']}
-"""
-    send(msg, InlineKeyboardMarkup(keyboard))
+점수: {coin['score']} / 진입점수: {coin['entry_score']}
+""", markup)
 
 # ================= 매수 =================
 def handle(update, context):
     query = update.callback_query
     query.answer()
 
-    try:
-        action, bid = query.data.split("|")
-    except Exception:
-        send("버튼 정보가 이상해")
+    _, bid = query.data.split("|")
+    coin = button_data_store.get(bid)
+
+    if not coin:
+        send("만료된 신호")
         return
 
-    if action != "BUY":
-        send("알 수 없는 버튼이야")
-        return
+    ok, msg = pre_buy_check(coin["ticker"], coin)
 
-    item = button_data_store.get(bid)
-    if not item:
-        send("이미 만료된 신호야")
-        return
-
-    coin = item["coin"]
-    ticker = coin["ticker"]
-
-    if ticker in active_positions:
-        send(f"{ticker}는 이미 들고 있어")
-        return
-
-    ok, msg = pre_buy_check(ticker, coin)
     if not ok:
-        send(f"🛡️ 매수 방어 작동\n{msg}")
+        send(f"매수 취소: {msg}")
         return
 
     try:
-        result = bithumb.buy_market_order(ticker, coin["qty"])
-        time.sleep(1)
-
-        real_balance = get_balance(ticker)
-        if real_balance <= 0:
-            send(f"❌ 매수는 시도했는데 실제 잔고 확인이 안 돼\n응답: {result}")
-            return
-
-        active_positions[ticker] = {
-            **coin,
-            "qty": real_balance
-        }
-
-        send(
-            f"✅ 매수 완료\n"
-            f"{ticker}\n"
-            f"보유수량: {real_balance:.8f}\n"
-            f"목표가: {fmt(coin['tp'])}\n"
-            f"손절가: {fmt(coin['stop'])}"
-        )
+        bithumb.buy_market_order(coin["ticker"], coin["qty"])
+        active_positions[coin["ticker"]] = coin
+        send(f"매수 완료: {coin['ticker']}")
     except Exception as e:
-        send(f"❌ 매수 실패\n{e}")
+        send(f"매수 실패: {e}")
 
 # ================= 감시 =================
 def monitor():
     remove = []
 
-    for ticker, coin in list(active_positions.items()):
+    for ticker, coin in active_positions.items():
         price = get_price(ticker)
-        if price <= 0:
-            continue
 
-        balance = get_balance(ticker)
-        if balance <= 0:
-            remove.append(ticker)
-            continue
-
-        pnl = ((price - coin["entry"]) / coin["entry"] * 100) if coin["entry"] > 0 else 0
-
-        # 손절
         if price <= coin["stop"]:
-            try:
-                bithumb.sell_market_order(ticker, balance)
-                send(
-                    f"🚨 손절\n"
-                    f"{ticker}\n"
-                    f"현재가: {fmt(price)}\n"
-                    f"손절기준: {fmt(coin['stop'])}\n"
-                    f"수익률: {fmt_pct(pnl)}"
-                )
-                remove.append(ticker)
-                continue
-            except Exception as e:
-                print(f"[손절 오류] {ticker} / {e}")
+            bithumb.sell_market_order(ticker, coin["qty"])
+            send(f"손절: {ticker}")
+            remove.append(ticker)
 
-        # 익절
         elif price >= coin["tp"]:
-            try:
-                bithumb.sell_market_order(ticker, balance)
-                send(
-                    f"🎯 익절 완료\n"
-                    f"{ticker}\n"
-                    f"현재가: {fmt(price)}\n"
-                    f"목표가: {fmt(coin['tp'])}\n"
-                    f"수익률: {fmt_pct(pnl)}"
-                )
-                remove.append(ticker)
-                continue
-            except Exception as e:
-                print(f"[익절 오류] {ticker} / {e}")
+            bithumb.sell_market_order(ticker, coin["qty"])
+            send(f"익절: {ticker}")
+            remove.append(ticker)
 
     for t in remove:
-        active_positions.pop(t, None)
+        active_positions.pop(t)
 
 # ================= 실행 =================
 updater = Updater(token=TELEGRAM_TOKEN, use_context=True)
 dispatcher = updater.dispatcher
 dispatcher.add_handler(CallbackQueryHandler(handle))
 
-# 텔레그램 충돌 방지
 updater.start_polling(drop_pending_updates=True)
 
 print("🚀 실전형 시스템 실행")
 
-last_position_check = 0
+last_check = 0
 
 while True:
     now = time.time()
 
     try:
         scan()
-    except Exception as e:
-        print(f"[스캔 오류] {e}")
+    except:
         traceback.print_exc()
 
-    if now - last_position_check >= POSITION_CHECK_INTERVAL:
+    if now - last_check >= POSITION_CHECK_INTERVAL:
         try:
             monitor()
-        except Exception as e:
-            print(f"[감시 오류] {e}")
+        except:
             traceback.print_exc()
-        last_position_check = now
+        last_check = now
 
     time.sleep(SCAN_INTERVAL)
