@@ -34,7 +34,7 @@ TIMEZONE = "Asia/Seoul"
 # ===== 알림 / 재추천 =====
 SAME_STATUS_COOLDOWN = 1200
 ENTRY_NEAR_RANGE = 0.8
-MIN_REALERT_PRICE_CHANGE = 0.35   # 이전 알림 대비 가격 변화 최소치(%)
+MIN_REALERT_PRICE_CHANGE = 0.35
 
 # ===== BTC 시장 필터 =====
 BTC_MARKET_FILTER = True
@@ -42,23 +42,28 @@ BTC_CRASH_LOCK_MINUTES = 20
 BTC_CRASH_THRESHOLD = -2.0
 btc_lock_until = 0
 
-# ===== 공격형 v3.4 세팅 =====
+# ===== 공격형 v3.5 + S급 =====
 MIN_TP_GAP = 1.5
 MAX_ENTRY_GAP = 1.5
 MIN_VOL_RATIO = 0.35
-MIN_STRONG_VOL_RATIO = 0.55       # 강한 진입용 거래량 기준 강화
+MIN_STRONG_VOL_RATIO = 0.80
 MIN_ENTRY_SCORE = 1
 MIN_RESISTANCE_GAP = 0.6
-MIN_RECENT_MOVE_PCT = 0.6         # 최근 횡보 코인 제거용 최소 움직임 %
+MIN_RECENT_MOVE_PCT = 0.6
+
+# ===== S급 필터 =====
+S_GRADE_MIN_VOL_RATIO = 1.0
+S_GRADE_MIN_MOVE_PCT = 2.5
+S_GRADE_MIN_ENTRY_SCORE = 5
 
 # ===== 본절 보호 =====
 BREAKEVEN_TRIGGER = 1.5
 BREAKEVEN_MARGIN = 0.2
 
-# ===== 트레일링 익절 옵션 =====
-USE_TRAILING_TP = False
-TRAILING_ARM_PCT = 2.0
-TRAILING_GIVEBACK_PCT = 0.8
+# ===== 트레일링 익절 =====
+USE_TRAILING_TP = True
+TRAILING_ARM_PCT = 3.0
+TRAILING_GIVEBACK_PCT = 1.0
 
 # ===== 로그 =====
 LOG_FILE = "trade_log.json"
@@ -311,7 +316,6 @@ def should_send_alert(coin, now_ts):
 
     price_delta = price_change_from_last_alert_pct(coin["price"], last_price)
 
-    # 상태가 바뀌거나 진입가 근접이 새로 생기거나 점수 상승이면 허용
     if status != last_status:
         return True
     if entry_near and not last_entry_near:
@@ -319,7 +323,6 @@ def should_send_alert(coin, now_ts):
     if entry_score > last_entry_score:
         return True
 
-    # 가격 변화가 너무 작으면 재알림 차단
     if price_delta < MIN_REALERT_PRICE_CHANGE:
         return False
 
@@ -390,7 +393,6 @@ def analyze_coin(ticker):
     reasons = []
     warnings = []
 
-    # 횡보 코인 제거
     if recent_move_pct < MIN_RECENT_MOVE_PCT:
         return None
 
@@ -461,7 +463,7 @@ def analyze_coin(ticker):
     stop = support * 0.97
 
     if vol_ratio >= 1.0 and rebound and volume_recovery_ok and entry_score >= 4:
-        tp_mult = 1.06
+        tp_mult = 1.08
         tp_type = "강한 목표"
     elif vol_ratio >= 0.6 and rebound:
         tp_mult = 1.04
@@ -513,7 +515,22 @@ def analyze_coin(ticker):
     if entry_score < -1:
         return None
 
-    # 강한 진입은 거래량 기준 더 빡세게
+    # 등급 분류
+    if (
+        vol_ratio >= S_GRADE_MIN_VOL_RATIO
+        and recent_move_pct >= S_GRADE_MIN_MOVE_PCT
+        and rebound
+        and volume_recovery_ok
+        and entry_score >= S_GRADE_MIN_ENTRY_SCORE
+        and ma5 > ma10
+        and tp_type == "강한 목표"
+    ):
+        grade = "S"
+    elif tp_type in ["보통 목표", "강한 목표"] and entry_score >= 2:
+        grade = "A"
+    else:
+        grade = "B"
+
     if score >= 2 and entry_score >= MIN_ENTRY_SCORE and entry_gap_pct <= MAX_ENTRY_GAP and vol_ratio >= MIN_STRONG_VOL_RATIO:
         status = "🔥 강한 진입"
     elif score >= 2 and entry_score >= 0:
@@ -528,6 +545,7 @@ def analyze_coin(ticker):
         "stop": r(stop, 8),
         "tp": r(tp, 8),
         "tp_type": tp_type,
+        "grade": grade,
         "qty": qty,
         "status": status,
         "support": r(support, 8),
@@ -605,6 +623,7 @@ def try_auto_buy(coin):
         send(
             f"🤖 자동매수 완료\n"
             f"{ticker}\n"
+            f"등급: {coin['grade']}\n"
             f"보유수량: {real_balance:.8f}\n"
             f"진입가: {fmt_price(coin['entry'])}\n"
             f"목표가: {fmt_price(coin['tp'])}\n"
@@ -648,6 +667,7 @@ def scan():
 
     candidates.sort(
         key=lambda x: (
+            1 if x["grade"] == "S" else 0,
             1 if x.get("entry_near", False) else 0,
             1 if x["tp_type"] == "강한 목표" else 0,
             1 if x["tp_type"] == "보통 목표" else 0,
@@ -731,14 +751,13 @@ def scan():
                 extra_text = "\n자동매수: 진입가 근처라 우선 실행 대상"
             else:
                 extra_text = "\n자동매수: 실행 가능한 시간대"
-        elif AUTO_BUY:
-            extra_text = f"\n자동매수: 시간 밖이라 대기 중 (평일 {AUTO_BUY_START_HOUR}:00~{AUTO_BUY_END_HOUR}:00)"
 
     msg = f"""
 🔥 {coin['ticker']}
 
 {status_text}{extra_text}{change_reason}
 
+등급: {coin['grade']}
 현재가: {fmt_price(coin['price'])}
 지지선: {fmt_price(coin['support'])}
 저항선: {fmt_price(coin['resistance'])}
@@ -839,6 +858,7 @@ def handle(update: Update, context: CallbackContext):
         send(
             f"✅ 수동 매수 완료\n"
             f"{ticker}\n"
+            f"등급: {coin['grade']}\n"
             f"보유수량: {real_balance:.8f}\n"
             f"목표가: {fmt_price(coin['tp'])}\n"
             f"손절가: {fmt_price(coin['stop'])}\n"
@@ -922,8 +942,8 @@ def monitor():
                 except Exception as e:
                     print(f"[본절 오류] {ticker} / {e}")
 
-        # 트레일링 익절
-        if USE_TRAILING_TP:
+        # 트레일링은 S급 + 강한 목표만
+        if USE_TRAILING_TP and coin.get("grade") == "S" and coin.get("tp_type") == "강한 목표":
             if pnl >= TRAILING_ARM_PCT:
                 coin["trailing_armed"] = True
                 coin["trailing_stop_price"] = coin["peak_price"] * (1 - TRAILING_GIVEBACK_PCT / 100)
@@ -942,6 +962,7 @@ def monitor():
                     send(
                         f"📈 트레일링 익절 완료\n"
                         f"{ticker}\n"
+                        f"등급: {coin['grade']}\n"
                         f"현재가: {fmt_price(price)}\n"
                         f"고점대비 되밀림 익절\n"
                         f"수익률: {fmt_pct(pnl)}"
@@ -966,6 +987,7 @@ def monitor():
                 send(
                     f"🎯 익절 완료\n"
                     f"{ticker}\n"
+                    f"등급: {coin['grade']}\n"
                     f"현재가: {fmt_price(price)}\n"
                     f"목표가: {fmt_price(coin['tp'])}\n"
                     f"수익률: {fmt_pct(pnl)}"
@@ -986,7 +1008,7 @@ dispatcher.add_handler(CommandHandler("summary", summary_command))
 
 updater.start_polling(drop_pending_updates=True)
 
-print(f"🚀 공격형 v3.4 시스템 실행 / 기준시간대: {TIMEZONE}")
+print(f"🚀 공격형 v3.5 S급 시스템 실행 / 기준시간대: {TIMEZONE}")
 
 last_position_check = 0
 
