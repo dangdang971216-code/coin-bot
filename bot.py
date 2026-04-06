@@ -3,8 +3,9 @@ import time
 import uuid
 import traceback
 from datetime import datetime
-import pybithumb
+from zoneinfo import ZoneInfo
 
+import pybithumb
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Updater, CallbackQueryHandler
 
@@ -27,6 +28,7 @@ MIN_ORDER = 5000
 AUTO_BUY = True
 AUTO_BUY_START_HOUR = 9
 AUTO_BUY_END_HOUR = 18   # 18시는 포함 안 함 → 09:00~17:59
+TIMEZONE = "Asia/Seoul"
 
 # ===== 같은 상태 반복 알림 제한 =====
 recent_alerts = {}
@@ -83,8 +85,11 @@ def send(msg, keyboard=None):
     except Exception as e:
         print(f"[텔레그램 오류] {e}")
 
+def now_kst():
+    return datetime.now(ZoneInfo(TIMEZONE))
+
 def is_weekday_auto_time():
-    now = datetime.now()
+    now = now_kst()
     is_weekday = now.weekday() < 5  # 월=0 ~ 금=4
     is_time_ok = AUTO_BUY_START_HOUR <= now.hour < AUTO_BUY_END_HOUR
     return is_weekday and is_time_ok
@@ -148,7 +153,7 @@ def detect_volume_recovery(df):
         if prev_vol <= 0:
             return False, 0.0
         ratio = recent_vol / prev_vol
-        return ratio >= 0.90, ratio   # 완화
+        return ratio >= 0.90, ratio
     except Exception:
         return False, 0.0
 
@@ -163,7 +168,7 @@ def cleanup_buttons():
     for k in delete_keys:
         button_data_store.pop(k, None)
 
-def should_send_alert(coin, now):
+def should_send_alert(coin, now_ts):
     ticker = coin["ticker"]
     status = coin["status"]
 
@@ -178,8 +183,8 @@ def should_send_alert(coin, now):
     if status != last_status:
         return True
 
-    # 같은 상태면 쿨다운 지난 뒤에만
-    if now - last_time >= SAME_STATUS_COOLDOWN:
+    # 같은 상태면 쿨다운 뒤에만
+    if now_ts - last_time >= SAME_STATUS_COOLDOWN:
         return True
 
     return False
@@ -196,14 +201,14 @@ def pre_buy_check(ticker, coin):
     if price >= coin["tp"]:
         return False, "이미 목표가 근처라 지금은 너무 늦었어"
 
-    if price > coin["entry"] * 1.02:
-        return False, "추천 진입가보다 너무 올라서 늦은 자리야"
+    if price > coin["entry"] * 1.01:
+        return False, "추천 진입가보다 올라서 지금은 늦은 편이야"
 
     if price < coin["entry"] * 0.985:
         return False, "추천 받았던 자리보다 많이 내려와서 흐름이 깨졌어"
 
     tp_gap_pct = ((coin["tp"] - price) / price) * 100 if price > 0 else 0
-    if tp_gap_pct < 0.6:
+    if tp_gap_pct < 0.8:
         return False, "목표가가 너무 가까워서 먹을 자리가 적어"
 
     stop_gap_pct = ((coin["entry"] - coin["stop"]) / coin["entry"]) * 100 if coin["entry"] > 0 else 0
@@ -246,10 +251,10 @@ def analyze_coin(ticker):
     warnings = []
 
     # 1) 지지선 범위
-    if support * 0.965 <= price <= support * 1.04:
+    if support * 0.97 <= price <= support * 1.03:
         score += 2
         reasons.append("- 지지선 근처라 진입 자리로 볼 수 있어")
-    elif support * 0.95 <= price <= support * 1.06:
+    elif support * 0.95 <= price <= support * 1.05:
         score += 1
         reasons.append("- 지지선에서 아주 멀진 않아")
     else:
@@ -264,26 +269,26 @@ def analyze_coin(ticker):
         warnings.append("- 최근 흐름이 아직 강하진 않아")
 
     # 3) RSI
-    if 28 <= rsi <= 65:
+    if 30 <= rsi <= 60:
         score += 1
         reasons.append(f"- 과열도 아니고 너무 약하지도 않은 상태야 ({rsi:.2f})")
-    elif rsi < 28:
+    elif rsi < 30:
         warnings.append(f"- 아직 약한 흐름일 수 있어 ({rsi:.2f})")
     else:
         warnings.append(f"- 이미 좀 오른 상태일 수 있어 ({rsi:.2f})")
 
-    # 4) 거래량 기본 체크 (완화)
-    if vol_ratio >= 0.55:
+    # 4) 거래량 기본 체크
+    if vol_ratio >= 0.60:
         score += 1
         entry_score += 1
         reasons.append(f"- 거래량이 평소보다 들어오고 있어 ({vol_ratio:.2f}배)")
-    elif vol_ratio >= 0.35:
+    elif vol_ratio >= 0.40:
         reasons.append(f"- 거래량은 아주 나쁘진 않아 ({vol_ratio:.2f}배)")
     else:
         entry_score -= 1
         warnings.append(f"- 거래량이 약해서 힘이 부족할 수 있어 ({vol_ratio:.2f}배)")
 
-    # 5) 거래량 회복 (완화)
+    # 5) 거래량 회복
     if volume_recovery_ok:
         entry_score += 1
         reasons.append(f"- 최근 거래량이 다시 살아나는 중이야 ({volume_recovery_ratio:.2f}배)")
@@ -295,12 +300,12 @@ def analyze_coin(ticker):
         entry_score -= 2
         warnings.append("- 최근 종가 흐름이 계속 밀리고 있어서 조심해야 해")
 
-    # 7) 급등 추격 방지 (완화)
-    if pump >= 6.0:
+    # 7) 급등 추격 방지
+    if pump >= 5.0:
         score -= 2
         entry_score -= 2
         warnings.append(f"- 최근 너무 빨리 올라서 지금 사면 늦을 수 있어 ({pump:.2f}%)")
-    elif pump >= 3.0:
+    elif pump >= 2.0:
         entry_score -= 1
         warnings.append(f"- 최근 이미 좀 올라서 급하게 사면 불리할 수 있어 ({pump:.2f}%)")
     else:
@@ -318,15 +323,20 @@ def analyze_coin(ticker):
     stop = support * 0.97
     tp = entry * 1.025
 
-    # 늦은 자리 제거
+    entry_gap_pct = ((price - entry) / entry) * 100 if entry > 0 else 999
+    tp_gap_pct = ((tp - price) / price) * 100 if price > 0 else -999
+
+    # 이상한 추천 제거
     if price >= tp:
         return None
 
-    if price > entry * 1.02:
+    if entry_gap_pct > 2.0:
+        return None
+
+    if tp_gap_pct < 0.8:
         return None
 
     qty = int(FIXED_ENTRY_KRW / entry) if entry > 0 else 0
-
     if qty > 0 and entry * qty < MIN_ORDER:
         qty = int(MIN_ORDER / entry) + 1
 
@@ -348,9 +358,11 @@ def analyze_coin(ticker):
     if qty <= 0:
         return None
 
-    # ===== 상태 판정 완화 =====
-    if score >= 2 and entry_score >= 1:
+    # ================= 상태 판정 =================
+    if score >= 2 and entry_score >= 1 and entry_gap_pct <= 1.0:
         status = "진입 가능"
+    elif score >= 2 and entry_score >= 1 and entry_gap_pct <= 2.0:
+        status = "조금 늦음"
     elif score >= 1:
         status = "관찰 추천"
     else:
@@ -368,6 +380,8 @@ def analyze_coin(ticker):
         "resistance": r(resistance, 8),
         "score": score,
         "entry_score": entry_score,
+        "entry_gap_pct": r(entry_gap_pct, 2),
+        "tp_gap_pct": r(tp_gap_pct, 2),
         "reason": "\n".join(reasons) if reasons else "- 없음",
         "warning": "\n".join(warnings) if warnings else "- 특별한 경고 없음",
     }
@@ -387,6 +401,9 @@ def try_auto_buy(coin):
 
     if not is_weekday_auto_time():
         return False, "자동매수 시간대가 아니야"
+
+    if coin["status"] != "진입 가능":
+        return False, "지금은 자동매수할 정도의 타이밍은 아니야"
 
     ok, msg = pre_buy_check(ticker, coin)
     if not ok:
@@ -411,8 +428,7 @@ def try_auto_buy(coin):
             f"보유수량: {real_balance:.8f}\n"
             f"진입가: {fmt_price(coin['entry'])}\n"
             f"목표가: {fmt_price(coin['tp'])}\n"
-            f"손절가: {fmt_price(coin['stop'])}\n"
-            f"자동매수 시간: 평일 {AUTO_BUY_START_HOUR}:00~{AUTO_BUY_END_HOUR}:00"
+            f"손절가: {fmt_price(coin['stop'])}"
         )
         return True, "자동매수 완료"
     except Exception as e:
@@ -424,7 +440,7 @@ def scan():
         return
 
     cleanup_buttons()
-    now = time.time()
+    now_ts = time.time()
 
     try:
         tickers = pybithumb.get_tickers()
@@ -439,7 +455,7 @@ def scan():
 
     for t in tickers[:TOP_TICKERS]:
         coin = analyze_coin(t)
-        if coin and coin["status"] in ["관찰 추천", "진입 가능"]:
+        if coin and coin["status"] in ["관찰 추천", "조금 늦음", "진입 가능"]:
             candidates.append(coin)
 
     if not candidates:
@@ -449,6 +465,7 @@ def scan():
     candidates.sort(
         key=lambda x: (
             1 if x["status"] == "진입 가능" else 0,
+            1 if x["status"] == "조금 늦음" else 0,
             x["score"],
             x["entry_score"]
         ),
@@ -457,44 +474,51 @@ def scan():
 
     coin = candidates[0]
 
-    # 같은 상태 반복 알림 차단
-    if not should_send_alert(coin, now):
-        return
-
-    recent_alerts[coin["ticker"]] = {
-        "time": now,
-        "status": coin["status"]
-    }
-
-    # 자동매수 먼저 시도
+    # 자동매수 우선
     if coin["status"] == "진입 가능" and AUTO_BUY and is_weekday_auto_time():
         success, msg = try_auto_buy(coin)
         if success:
+            recent_alerts[coin["ticker"]] = {
+                "time": now_ts,
+                "status": "자동매수완료"
+            }
             return
         else:
-            print(f"[자동매수 미실행] {coin['ticker']} / {msg}")
+            print(f"[자동매수 실패 또는 미실행] {coin['ticker']} / {msg}")
+
+    # 같은 상태 반복 알림 차단
+    if not should_send_alert(coin, now_ts):
+        return
+
+    recent_alerts[coin["ticker"]] = {
+        "time": now_ts,
+        "status": coin["status"]
+    }
 
     reply_markup = None
-    status_text = ""
 
     if coin["status"] == "진입 가능":
+        status_text = "✅ 지금 타이밍 괜찮음"
         bid = str(uuid.uuid4())[:8]
         button_data_store[bid] = {
             "coin": coin,
-            "created_at": now
+            "created_at": now_ts
         }
         keyboard = [[InlineKeyboardButton("🔥 매수", callback_data=f"BUY|{bid}")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        status_text = "✅ 지금 들어가도 되는 편"
+
+    elif coin["status"] == "조금 늦음":
+        status_text = "⚠️ 조금 늦어서 급하게 들어가긴 애매함"
+
     else:
         status_text = "⏳ 아직은 관찰만 추천"
 
     auto_text = ""
-    if AUTO_BUY:
-        if is_weekday_auto_time():
-            auto_text = f"\n자동매수: ON (평일 {AUTO_BUY_START_HOUR}:00~{AUTO_BUY_END_HOUR}:00)"
-        else:
-            auto_text = f"\n자동매수: 대기 중 (평일 {AUTO_BUY_START_HOUR}:00~{AUTO_BUY_END_HOUR}:00만 실행)"
+    if coin["status"] == "진입 가능":
+        if AUTO_BUY and is_weekday_auto_time():
+            auto_text = "\n자동매수: 실행 가능한 시간대"
+        elif AUTO_BUY:
+            auto_text = f"\n자동매수: 시간 밖이라 대기 중 (평일 {AUTO_BUY_START_HOUR}:00~{AUTO_BUY_END_HOUR}:00)"
 
     msg = f"""
 🔥 {coin['ticker']}
@@ -508,6 +532,9 @@ def scan():
 추천 진입가: {fmt_price(coin['entry'])}
 손절가: {fmt_price(coin['stop'])}
 목표가: {fmt_price(coin['tp'])}
+
+진입가와 현재가 차이: {fmt_pct(coin['entry_gap_pct'])}
+목표가까지 여유: {fmt_pct(coin['tp_gap_pct'])}
 
 추천 점수: {coin['score']}
 진입 적합도: {coin['entry_score']}
@@ -551,6 +578,10 @@ def handle(update, context):
 
     if active_positions:
         send("이미 다른 코인 보유 중이야")
+        return
+
+    if coin["status"] != "진입 가능":
+        send("지금은 수동 진입까지 하기엔 애매한 자리야")
         return
 
     ok, msg = pre_buy_check(ticker, coin)
@@ -639,12 +670,12 @@ dispatcher.add_handler(CallbackQueryHandler(handle))
 # 텔레그램 충돌 방지
 updater.start_polling(drop_pending_updates=True)
 
-print("🚀 실전형 시스템 실행")
+print(f"🚀 실전형 시스템 실행 / 기준시간대: {TIMEZONE}")
 
 last_position_check = 0
 
 while True:
-    now = time.time()
+    now_ts = time.time()
 
     try:
         scan()
@@ -652,12 +683,12 @@ while True:
         print(f"[스캔 오류] {e}")
         traceback.print_exc()
 
-    if now - last_position_check >= POSITION_CHECK_INTERVAL:
+    if now_ts - last_position_check >= POSITION_CHECK_INTERVAL:
         try:
             monitor()
         except Exception as e:
             print(f"[감시 오류] {e}")
             traceback.print_exc()
-        last_position_check = now
+        last_position_check = now_ts
 
     time.sleep(SCAN_INTERVAL)
