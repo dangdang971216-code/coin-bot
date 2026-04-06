@@ -25,19 +25,22 @@ TOP_TICKERS = 40
 FIXED_ENTRY_KRW = 11000
 MIN_ORDER = 5000
 
+# ===== 자동매수 설정 =====
 AUTO_BUY = True
 AUTO_BUY_START_HOUR = 9
-AUTO_BUY_END_HOUR = 18
+AUTO_BUY_END_HOUR = 18   # 18시는 포함 안 함 → 09:00~17:59
 TIMEZONE = "Asia/Seoul"
 
-SAME_STATUS_COOLDOWN = 1800  # 같은 상태 반복 알림 30분 제한
+# ===== 같은 상태 반복 알림 제한 =====
+SAME_STATUS_COOLDOWN = 1800   # 30분
 
-# 시장 필터
+# ===== BTC 시장 필터 =====
 BTC_MARKET_FILTER = True
 BTC_CRASH_LOCK_MINUTES = 30
+BTC_CRASH_THRESHOLD = -1.5   # 최근 4개 캔들 기준 -1.5%면 잠금
 btc_lock_until = 0
 
-# 로그
+# ===== 로그 =====
 LOG_FILE = "trade_log.json"
 
 # ================= 기본 체크 =================
@@ -205,7 +208,7 @@ def detect_volume_recovery(df):
     except Exception:
         return False, 0.0
 
-# ================= 시장 필터 =================
+# ================= BTC 시장 필터 =================
 def get_btc_market_state():
     global btc_lock_until
 
@@ -228,12 +231,10 @@ def get_btc_market_state():
     end = float(recent["close"].iloc[-1])
     drop_pct = ((end - start) / start) * 100 if start > 0 else 0
 
-    # BTC 급락 잠금
-    if drop_pct <= -1.5:
+    if drop_pct <= BTC_CRASH_THRESHOLD:
         btc_lock_until = time.time() + BTC_CRASH_LOCK_MINUTES * 60
         return False, f"BTC 급락 감지 ({drop_pct:.2f}%), {BTC_CRASH_LOCK_MINUTES}분 잠금"
 
-    # 시장 방향 필터
     if price < ma20:
         return False, "BTC가 MA20 아래라 시장 분위기가 약함"
 
@@ -330,6 +331,7 @@ def analyze_coin(ticker):
     reasons = []
     warnings = []
 
+    # 지지선
     if support * 0.97 <= price <= support * 1.03:
         score += 2
         reasons.append("- 지지선 근처라 진입 자리로 볼 수 있어")
@@ -339,6 +341,7 @@ def analyze_coin(ticker):
     else:
         warnings.append("- 지지선과 거리가 있어서 지금 바로 들어가긴 애매해")
 
+    # 추세
     if ma5 > ma10:
         score += 1
         entry_score += 1
@@ -346,6 +349,7 @@ def analyze_coin(ticker):
     else:
         warnings.append("- 최근 흐름이 아직 강하진 않아")
 
+    # RSI
     if 30 <= rsi <= 60:
         score += 1
         reasons.append(f"- 과열도 아니고 너무 약하지도 않은 상태야 ({rsi:.2f})")
@@ -354,6 +358,7 @@ def analyze_coin(ticker):
     else:
         warnings.append(f"- 이미 좀 오른 상태일 수 있어 ({rsi:.2f})")
 
+    # 거래량
     if vol_ratio >= 0.60:
         score += 1
         entry_score += 1
@@ -364,16 +369,19 @@ def analyze_coin(ticker):
         entry_score -= 1
         warnings.append(f"- 거래량이 약해서 힘이 부족할 수 있어 ({vol_ratio:.2f}배)")
 
+    # 거래량 회복
     if volume_recovery_ok:
         entry_score += 1
         reasons.append(f"- 최근 거래량이 다시 살아나는 중이야 ({volume_recovery_ratio:.2f}배)")
     else:
         warnings.append(f"- 최근 거래량 회복은 아직 약해 ({volume_recovery_ratio:.2f}배)")
 
+    # 연속 하락
     if detect_bad_flow(df):
         entry_score -= 2
         warnings.append("- 최근 종가 흐름이 계속 밀리고 있어서 조심해야 해")
 
+    # 급등 추격 방지
     if pump >= 5.0:
         score -= 2
         entry_score -= 2
@@ -384,19 +392,33 @@ def analyze_coin(ticker):
     else:
         reasons.append(f"- 최근 급하게 오른 상태는 아니야 ({pump:.2f}%)")
 
+    # 반등
     if rebound:
         entry_score += 2
         reasons.append("- 눌렸다가 다시 반등하려는 움직임이 보여")
     else:
         warnings.append("- 아직 반등 신호는 약해서 조금 더 지켜보는 게 좋아")
 
+    # 가격 계산
     entry = support * 1.01
     stop = support * 0.97
     tp = entry * 1.025
 
     entry_gap_pct = ((price - entry) / entry) * 100 if entry > 0 else 999
     tp_gap_pct = ((tp - price) / price) * 100 if price > 0 else -999
+    resistance_gap_pct = ((resistance - price) / price) * 100 if price > 0 else -999
 
+    # 저항 거리 체크
+    if resistance_gap_pct < 1.0:
+        entry_score -= 2
+        warnings.append(f"- 위쪽 저항까지 공간이 너무 적어 ({resistance_gap_pct:.2f}%)")
+    elif resistance_gap_pct < 2.0:
+        entry_score -= 1
+        warnings.append(f"- 위쪽 저항이 가까운 편이야 ({resistance_gap_pct:.2f}%)")
+    else:
+        reasons.append(f"- 위쪽 저항까지 어느 정도 공간이 있어 ({resistance_gap_pct:.2f}%)")
+
+    # 이상한 추천 제거
     if price >= tp:
         return None
 
@@ -449,6 +471,7 @@ def analyze_coin(ticker):
         "entry_score": entry_score,
         "entry_gap_pct": r(entry_gap_pct, 2),
         "tp_gap_pct": r(tp_gap_pct, 2),
+        "resistance_gap_pct": r(resistance_gap_pct, 2),
         "reason": "\n".join(reasons) if reasons else "- 없음",
         "warning": "\n".join(warnings) if warnings else "- 특별한 경고 없음",
     }
@@ -620,6 +643,7 @@ def scan():
 
 진입가와 현재가 차이: {fmt_pct(coin['entry_gap_pct'])}
 목표가까지 여유: {fmt_pct(coin['tp_gap_pct'])}
+저항까지 여유: {fmt_pct(coin['resistance_gap_pct'])}
 
 추천 점수: {coin['score']}
 진입 적합도: {coin['entry_score']}
