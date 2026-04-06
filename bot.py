@@ -42,7 +42,7 @@ BTC_CRASH_LOCK_MINUTES = 20
 BTC_CRASH_THRESHOLD = -2.0
 btc_lock_until = 0
 
-# ===== 공격형 v3.5 + S급 =====
+# ===== 공격형 v3.6 세팅 =====
 MIN_TP_GAP = 1.5
 MAX_ENTRY_GAP = 1.5
 MIN_VOL_RATIO = 0.35
@@ -103,14 +103,14 @@ def add_log(log):
     save_logs()
 
 def get_trade_summary_text():
-    closes = [x for x in trade_logs if x.get("type") in ["TP", "STOP", "TRAIL_TP", "BREAKEVEN"]]
+    closes = [x for x in trade_logs if x.get("type") in ["TP", "STOP", "TRAIL_TP", "BREAKEVEN", "SWITCH_OUT"]]
 
     if not closes:
         return "📊 아직 종료된 거래가 없어"
 
     total = len(closes)
-    wins = len([x for x in closes if x["type"] in ["TP", "TRAIL_TP", "BREAKEVEN"]])
-    losses = len([x for x in closes if x["type"] == "STOP"])
+    wins = len([x for x in closes if x["type"] in ["TP", "TRAIL_TP", "BREAKEVEN", "SWITCH_OUT"] and float(x.get("pnl_pct", 0)) >= 0])
+    losses = len([x for x in closes if x["type"] == "STOP" or float(x.get("pnl_pct", 0)) < 0])
     win_rate = (wins / total) * 100 if total > 0 else 0
     total_pnl = sum(float(x.get("pnl_pct", 0)) for x in closes)
     avg_pnl = total_pnl / total if total > 0 else 0
@@ -119,7 +119,7 @@ def get_trade_summary_text():
         f"📊 거래 요약\n"
         f"총 종료 거래: {total}\n"
         f"익절/본절: {wins}\n"
-        f"손절: {losses}\n"
+        f"손절/음수종료: {losses}\n"
         f"승률: {win_rate:.2f}%\n"
         f"누적 수익률: {total_pnl:.2f}%\n"
         f"평균 수익률: {avg_pnl:.2f}%"
@@ -171,6 +171,13 @@ def is_weekday_auto_time():
     is_weekday = now.weekday() < 5
     is_time_ok = AUTO_BUY_START_HOUR <= now.hour < AUTO_BUY_END_HOUR
     return is_weekday and is_time_ok
+
+def grade_rank(grade):
+    if grade == "S":
+        return 3
+    elif grade == "A":
+        return 2
+    return 1
 
 # ================= 데이터 조회 =================
 def get_price(ticker):
@@ -515,7 +522,6 @@ def analyze_coin(ticker):
     if entry_score < -1:
         return None
 
-    # 등급 분류
     if (
         vol_ratio >= S_GRADE_MIN_VOL_RATIO
         and recent_move_pct >= S_GRADE_MIN_MOVE_PCT
@@ -562,7 +568,37 @@ def analyze_coin(ticker):
         "warning": "\n".join(warnings) if warnings else "- 특별한 경고 없음",
     }
 
-# ================= 자동매수 =================
+# ================= 주문 처리 =================
+def buy_coin(coin, mode="AUTO"):
+    ticker = coin["ticker"]
+
+    result = bithumb.buy_market_order(ticker, coin["qty"])
+    time.sleep(1)
+
+    real_balance = get_balance(ticker)
+    if real_balance <= 0:
+        return False, f"매수는 시도했는데 실제 잔고 확인이 안 돼 / 응답: {result}"
+
+    active_positions[ticker] = {
+        **coin,
+        "qty": real_balance,
+        "peak_price": coin["entry"],
+        "trailing_armed": False,
+        "trailing_stop_price": 0.0,
+        "breakeven_armed": False
+    }
+
+    add_log({
+        "time": int(time.time()),
+        "type": "BUY",
+        "ticker": ticker,
+        "entry": coin["entry"],
+        "qty": real_balance,
+        "mode": mode
+    })
+
+    return True, real_balance
+
 def try_auto_buy(coin):
     ticker = coin["ticker"]
 
@@ -595,36 +631,15 @@ def try_auto_buy(coin):
         return False, msg
 
     try:
-        result = bithumb.buy_market_order(ticker, coin["qty"])
-        time.sleep(1)
-
-        real_balance = get_balance(ticker)
-        if real_balance <= 0:
-            return False, f"매수는 시도했는데 실제 잔고 확인이 안 돼 / 응답: {result}"
-
-        active_positions[ticker] = {
-            **coin,
-            "qty": real_balance,
-            "peak_price": coin["entry"],
-            "trailing_armed": False,
-            "trailing_stop_price": 0.0,
-            "breakeven_armed": False
-        }
-
-        add_log({
-            "time": int(time.time()),
-            "type": "BUY",
-            "ticker": ticker,
-            "entry": coin["entry"],
-            "qty": real_balance,
-            "mode": "AUTO"
-        })
+        success, result = buy_coin(coin, mode="AUTO")
+        if not success:
+            return False, result
 
         send(
             f"🤖 자동매수 완료\n"
             f"{ticker}\n"
             f"등급: {coin['grade']}\n"
-            f"보유수량: {real_balance:.8f}\n"
+            f"보유수량: {result:.8f}\n"
             f"진입가: {fmt_price(coin['entry'])}\n"
             f"목표가: {fmt_price(coin['tp'])}\n"
             f"손절가: {fmt_price(coin['stop'])}\n"
@@ -636,9 +651,6 @@ def try_auto_buy(coin):
 
 # ================= 스캔 =================
 def scan():
-    if active_positions:
-        return
-
     cleanup_buttons()
     now_ts = time.time()
 
@@ -652,6 +664,11 @@ def scan():
         return
 
     market_ok, market_msg = get_btc_market_state()
+
+    current_holding = None
+    current_ticker = None
+    if active_positions:
+        current_ticker, current_holding = list(active_positions.items())[0]
 
     candidates = []
     for t in tickers[:TOP_TICKERS]:
@@ -667,7 +684,7 @@ def scan():
 
     candidates.sort(
         key=lambda x: (
-            1 if x["grade"] == "S" else 0,
+            grade_rank(x["grade"]),
             1 if x.get("entry_near", False) else 0,
             1 if x["tp_type"] == "강한 목표" else 0,
             1 if x["tp_type"] == "보통 목표" else 0,
@@ -683,6 +700,66 @@ def scan():
     coin = candidates[0]
     prev = recent_alerts.get(coin["ticker"], {})
 
+    # 보유 중 정책
+    if current_holding:
+        holding_grade = current_holding.get("grade", "B")
+        new_grade = coin.get("grade", "B")
+
+        # S 보유 중이면 신규 신호 무시
+        if grade_rank(holding_grade) >= 3:
+            return
+
+        # A 보유 중인데 S급 기회면 갈아타기 제안
+        if grade_rank(holding_grade) == 2 and grade_rank(new_grade) == 3:
+            if should_send_alert(coin, now_ts):
+                bid = str(uuid.uuid4())[:8]
+                button_data_store[bid] = {
+                    "coin": coin,
+                    "created_at": now_ts,
+                    "switch_from": current_ticker
+                }
+
+                keyboard = [[InlineKeyboardButton("🔁 A 팔고 S로 갈아타기", callback_data=f"SWITCH|{bid}")]]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+
+                recent_alerts[coin["ticker"]] = {
+                    "time": now_ts,
+                    "status": coin["status"],
+                    "entry_score": coin["entry_score"],
+                    "entry_near": coin.get("entry_near", False),
+                    "tp_type": coin["tp_type"],
+                    "price": coin["price"]
+                }
+
+                msg = f"""
+🚨 S급 우선 기회
+
+현재 보유: {current_ticker} ({holding_grade})
+새 후보: {coin['ticker']} ({new_grade})
+
+현재가: {fmt_price(coin['price'])}
+추천 진입가: {fmt_price(coin['entry'])}
+손절가: {fmt_price(coin['stop'])}
+목표가: {fmt_price(coin['tp'])}
+목표가 유형: {coin['tp_type']}
+
+진입가와 현재가 차이: {fmt_pct(coin['entry_gap_pct'])}
+목표가까지 여유: {fmt_pct(coin['tp_gap_pct'])}
+최근 움직임: {fmt_pct(coin['recent_move_pct'])}
+
+왜 괜찮아 보이냐면
+{coin['reason']}
+
+주의할 점
+{coin['warning']}
+"""
+                send(msg, reply_markup)
+            return
+
+        # A 보유 중이면 A/B 신규 진입은 무시
+        return
+
+    # 자동매수
     if coin.get("entry_near", False) and coin["status"] == "🔥 강한 진입" and AUTO_BUY and is_weekday_auto_time() and (not BTC_MARKET_FILTER or market_ok):
         success, msg = try_auto_buy(coin)
         if success:
@@ -709,7 +786,6 @@ def scan():
             change_reason += "\n🎯 진입가 근접"
         if coin["tp_type"] != prev.get("tp_type", ""):
             change_reason += f"\n🚀 목표 유형 변화: {coin['tp_type']}"
-
         price_delta = price_change_from_last_alert_pct(coin["price"], prev.get("price", 0))
         if price_delta >= MIN_REALERT_PRICE_CHANGE:
             change_reason += f"\n📊 가격 변화: {price_delta:.2f}%"
@@ -725,7 +801,13 @@ def scan():
 
     reply_markup = None
 
-    if coin.get("entry_near", False) and coin["status"] == "🔥 강한 진입":
+    if coin["grade"] == "S" and coin.get("entry_near", False) and coin["status"] == "🔥 강한 진입":
+        status_text = "🚨 S급 기회 (진입가 근접)"
+        bid = str(uuid.uuid4())[:8]
+        button_data_store[bid] = {"coin": coin, "created_at": now_ts}
+        keyboard = [[InlineKeyboardButton("🔥 매수", callback_data=f"BUY|{bid}")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+    elif coin.get("entry_near", False) and coin["status"] == "🔥 강한 진입":
         status_text = "🚨 지금 진입 타이밍 (진입가 근접)"
         bid = str(uuid.uuid4())[:8]
         button_data_store[bid] = {"coin": coin, "created_at": now_ts}
@@ -751,6 +833,8 @@ def scan():
                 extra_text = "\n자동매수: 진입가 근처라 우선 실행 대상"
             else:
                 extra_text = "\n자동매수: 실행 가능한 시간대"
+        elif AUTO_BUY:
+            extra_text = f"\n자동매수: 시간 밖이라 대기 중 (평일 {AUTO_BUY_START_HOUR}:00~{AUTO_BUY_END_HOUR}:00)"
 
     msg = f"""
 🔥 {coin['ticker']}
@@ -785,7 +869,7 @@ def scan():
 """
     send(msg, reply_markup)
 
-# ================= 수동 매수 =================
+# ================= 버튼 처리 =================
 def handle(update: Update, context: CallbackContext):
     query = update.callback_query
     query.answer()
@@ -796,10 +880,6 @@ def handle(update: Update, context: CallbackContext):
         send("버튼 정보가 이상해")
         return
 
-    if action != "BUY":
-        send("알 수 없는 버튼이야")
-        return
-
     item = button_data_store.get(bid)
     if not item:
         send("만료된 신호")
@@ -808,64 +888,118 @@ def handle(update: Update, context: CallbackContext):
     coin = item["coin"]
     ticker = coin["ticker"]
 
-    if ticker in active_positions:
-        send(f"{ticker}는 이미 들고 있어")
-        return
-    if active_positions:
-        send("이미 다른 코인 보유 중이야")
-        return
-    if coin["status"] != "🔥 강한 진입":
-        send("지금은 수동 진입까지 하기엔 애매한 자리야")
-        return
-
-    market_ok, market_msg = get_btc_market_state()
-    if BTC_MARKET_FILTER and not market_ok:
-        send(f"🛡️ 매수 취소: 시장 필터 차단 ({market_msg})")
-        return
-
-    ok, msg = pre_buy_check(ticker, coin)
-    if not ok:
-        send(f"🛡️ 매수 취소: {msg}")
-        return
-
-    try:
-        result = bithumb.buy_market_order(ticker, coin["qty"])
-        time.sleep(1)
-
-        real_balance = get_balance(ticker)
-        if real_balance <= 0:
-            send(f"❌ 매수는 시도했는데 실제 잔고 확인이 안 돼\n응답: {result}")
+    if action == "BUY":
+        if ticker in active_positions:
+            send(f"{ticker}는 이미 들고 있어")
+            return
+        if active_positions:
+            send("이미 다른 코인 보유 중이야")
+            return
+        if coin["status"] != "🔥 강한 진입":
+            send("지금은 수동 진입까지 하기엔 애매한 자리야")
             return
 
-        active_positions[ticker] = {
-            **coin,
-            "qty": real_balance,
-            "peak_price": coin["entry"],
-            "trailing_armed": False,
-            "trailing_stop_price": 0.0,
-            "breakeven_armed": False
-        }
+        market_ok, market_msg = get_btc_market_state()
+        if BTC_MARKET_FILTER and not market_ok:
+            send(f"🛡️ 매수 취소: 시장 필터 차단 ({market_msg})")
+            return
 
-        add_log({
-            "time": int(time.time()),
-            "type": "BUY",
-            "ticker": ticker,
-            "entry": coin["entry"],
-            "qty": real_balance,
-            "mode": "MANUAL"
-        })
+        ok, msg = pre_buy_check(ticker, coin)
+        if not ok:
+            send(f"🛡️ 매수 취소: {msg}")
+            return
 
-        send(
-            f"✅ 수동 매수 완료\n"
-            f"{ticker}\n"
-            f"등급: {coin['grade']}\n"
-            f"보유수량: {real_balance:.8f}\n"
-            f"목표가: {fmt_price(coin['tp'])}\n"
-            f"손절가: {fmt_price(coin['stop'])}\n"
-            f"목표가 유형: {coin['tp_type']}"
-        )
-    except Exception as e:
-        send(f"❌ 매수 실패\n{e}")
+        try:
+            success, result = buy_coin(coin, mode="MANUAL")
+            if not success:
+                send(f"❌ 매수 실패\n{result}")
+                return
+
+            send(
+                f"✅ 수동 매수 완료\n"
+                f"{ticker}\n"
+                f"등급: {coin['grade']}\n"
+                f"보유수량: {result:.8f}\n"
+                f"목표가: {fmt_price(coin['tp'])}\n"
+                f"손절가: {fmt_price(coin['stop'])}\n"
+                f"목표가 유형: {coin['tp_type']}"
+            )
+        except Exception as e:
+            send(f"❌ 매수 실패\n{e}")
+        return
+
+    elif action == "SWITCH":
+        switch_from = item.get("switch_from")
+
+        if not switch_from or switch_from not in active_positions:
+            send("갈아탈 기존 포지션을 찾지 못했어")
+            return
+
+        current_coin = active_positions[switch_from]
+        balance = get_balance(switch_from)
+
+        if balance <= 0:
+            active_positions.pop(switch_from, None)
+            send("기존 포지션 잔고가 없어서 갈아타기 취소")
+            return
+
+        market_ok, market_msg = get_btc_market_state()
+        if BTC_MARKET_FILTER and not market_ok:
+            send(f"🛡️ 갈아타기 취소: 시장 필터 차단 ({market_msg})")
+            return
+
+        ok, msg = pre_buy_check(ticker, coin)
+        if not ok:
+            send(f"🛡️ 새 코인 진입 취소: {msg}")
+            return
+
+        try:
+            current_price = get_price(switch_from)
+            current_pnl = ((current_price - current_coin["entry"]) / current_coin["entry"] * 100) if current_coin["entry"] > 0 else 0
+
+            bithumb.sell_market_order(switch_from, balance)
+            time.sleep(1)
+
+            add_log({
+                "time": int(time.time()),
+                "type": "SWITCH_OUT",
+                "ticker": switch_from,
+                "entry": current_coin["entry"],
+                "exit": current_price,
+                "pnl_pct": round(current_pnl, 2)
+            })
+
+            active_positions.pop(switch_from, None)
+
+            success, result = buy_coin(coin, mode="SWITCH")
+            if not success:
+                send(f"❌ 갈아타기 중 새 코인 잔고 확인 실패\n{result}")
+                return
+
+            add_log({
+                "time": int(time.time()),
+                "type": "SWITCH_IN",
+                "ticker": ticker,
+                "entry": coin["entry"],
+                "qty": result
+            })
+
+            send(
+                f"🔁 갈아타기 완료\n"
+                f"{switch_from} → {ticker}\n"
+                f"새 등급: {coin['grade']}\n"
+                f"보유수량: {result:.8f}\n"
+                f"목표가: {fmt_price(coin['tp'])}\n"
+                f"손절가: {fmt_price(coin['stop'])}\n"
+                f"목표가 유형: {coin['tp_type']}"
+            )
+        except Exception as e:
+            send(f"❌ 갈아타기 실패\n{e}")
+        return
+
+    else:
+        send("알 수 없는 버튼이야")
+        return
 
 # ================= 요약 명령 =================
 def summary_command(update: Update, context: CallbackContext):
@@ -1008,7 +1142,7 @@ dispatcher.add_handler(CommandHandler("summary", summary_command))
 
 updater.start_polling(drop_pending_updates=True)
 
-print(f"🚀 공격형 v3.5 S급 시스템 실행 / 기준시간대: {TIMEZONE}")
+print(f"🚀 공격형 v3.6 A/S 우선 시스템 실행 / 기준시간대: {TIMEZONE}")
 
 last_position_check = 0
 
