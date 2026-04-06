@@ -20,7 +20,7 @@ API_SECRET = os.getenv("API_SECRET")
 SCAN_INTERVAL = 60
 POSITION_CHECK_INTERVAL = 10
 BUTTON_EXPIRE = 600
-TOP_TICKERS = 40
+TOP_TICKERS = 60
 
 FIXED_ENTRY_KRW = 11000
 MIN_ORDER = 5000
@@ -28,23 +28,23 @@ MIN_ORDER = 5000
 # ===== 자동매수 설정 =====
 AUTO_BUY = True
 AUTO_BUY_START_HOUR = 9
-AUTO_BUY_END_HOUR = 18   # 18시는 포함 안 함 → 09:00~17:59
+AUTO_BUY_END_HOUR = 18
 TIMEZONE = "Asia/Seoul"
 
 # ===== 반복 알림 제한 =====
-SAME_STATUS_COOLDOWN = 1800   # 30분
+SAME_STATUS_COOLDOWN = 1200   # 20분
 
 # ===== BTC 시장 필터 =====
 BTC_MARKET_FILTER = True
-BTC_CRASH_LOCK_MINUTES = 30
-BTC_CRASH_THRESHOLD = -1.5   # 최근 4개 캔들 기준 -1.5% 이하면 잠금
+BTC_CRASH_LOCK_MINUTES = 20
+BTC_CRASH_THRESHOLD = -2.0
 btc_lock_until = 0
 
-# ===== 공격형 세팅 =====
-MIN_TP_GAP = 3.0          # 목표가까지 최소 여유 %
-MAX_ENTRY_GAP = 0.8       # 현재가가 진입가보다 이 % 이상 높으면 자동매수 금지
-MIN_VOL_RATIO = 0.60      # 최소 거래량 배수
-MIN_ENTRY_SCORE = 2       # 자동매수 최소 진입 적합도
+# ===== 공격형 v2 세팅 =====
+MIN_TP_GAP = 2.0
+MAX_ENTRY_GAP = 1.2
+MIN_VOL_RATIO = 0.40
+MIN_ENTRY_SCORE = 1
 
 # ===== 로그 =====
 LOG_FILE = "trade_log.json"
@@ -114,11 +114,6 @@ def r(x, n=4):
         return 0.0
 
 def fmt_price(x):
-    """
-    빗썸 앱 느낌으로 표시:
-    - 1원 이상이면 정수
-    - 1원 미만이면 소수점 표시
-    """
     try:
         x = float(x)
     except Exception:
@@ -152,7 +147,7 @@ def now_kst():
 
 def is_weekday_auto_time():
     now = now_kst()
-    is_weekday = now.weekday() < 5  # 월=0 ~ 금=4
+    is_weekday = now.weekday() < 5
     is_time_ok = AUTO_BUY_START_HOUR <= now.hour < AUTO_BUY_END_HOUR
     return is_weekday and is_time_ok
 
@@ -198,7 +193,6 @@ def detect_rebound(df):
     closes = list(df.tail(5)["close"])
     if len(closes) < 5:
         return False
-    # 눌렸다가 다시 드는지
     return closes[-3] > closes[-2] and closes[-1] > closes[-2]
 
 def detect_recent_pump(df):
@@ -216,7 +210,7 @@ def detect_volume_recovery(df):
         if prev_vol <= 0:
             return False, 0.0
         ratio = recent_vol / prev_vol
-        return ratio >= 0.90, ratio
+        return ratio >= 0.80, ratio
     except Exception:
         return False, 0.0
 
@@ -230,11 +224,11 @@ def get_btc_market_state():
 
     df = get_ohlcv("BTC")
     if df is None:
-        return False, "BTC 차트 조회 실패"
+        return True, "BTC 조회 실패지만 진행"
 
     price = get_price("BTC")
     if price <= 0:
-        return False, "BTC 현재가 조회 실패"
+        return True, "BTC 현재가 조회 실패지만 진행"
 
     ma20 = float(df["close"].rolling(20).mean().iloc[-1])
 
@@ -247,7 +241,8 @@ def get_btc_market_state():
         btc_lock_until = time.time() + BTC_CRASH_LOCK_MINUTES * 60
         return False, f"BTC 급락 감지 ({drop_pct:.2f}%), {BTC_CRASH_LOCK_MINUTES}분 잠금"
 
-    if price < ma20:
+    # 너무 빡세지 않게 완화
+    if price < ma20 * 0.995:
         return False, "BTC가 MA20 아래라 시장 분위기가 약함"
 
     return True, "시장 분위기 무난"
@@ -259,7 +254,6 @@ def cleanup_buttons():
     for k, v in button_data_store.items():
         if now_ts - v["created_at"] > BUTTON_EXPIRE:
             delete_keys.append(k)
-
     for k in delete_keys:
         button_data_store.pop(k, None)
 
@@ -276,15 +270,12 @@ def should_send_alert(coin, now_ts):
     last_time = last_info.get("time", 0)
     last_entry_score = last_info.get("entry_score", -999)
 
-    # 상태가 좋아졌으면 바로 알림
     if status != last_status:
         return True
 
-    # 같은 상태인데 점수 좋아졌으면 알림
     if entry_score > last_entry_score:
         return True
 
-    # 같은 상태면 쿨다운 뒤에만
     if now_ts - last_time >= SAME_STATUS_COOLDOWN:
         return True
 
@@ -305,7 +296,7 @@ def pre_buy_check(ticker, coin):
     if price > coin["entry"] * (1 + MAX_ENTRY_GAP / 100):
         return False, "추천 진입가보다 올라서 지금은 늦은 편이야"
 
-    if price < coin["entry"] * 0.985:
+    if price < coin["entry"] * 0.98:
         return False, "추천 받았던 자리보다 많이 내려와서 흐름이 깨졌어"
 
     tp_gap_pct = ((coin["tp"] - price) / price) * 100 if price > 0 else 0
@@ -313,7 +304,7 @@ def pre_buy_check(ticker, coin):
         return False, "목표가가 너무 가까워서 먹을 자리가 적어"
 
     stop_gap_pct = ((coin["entry"] - coin["stop"]) / coin["entry"]) * 100 if coin["entry"] > 0 else 0
-    if stop_gap_pct > 5.0:
+    if stop_gap_pct > 6.0:
         return False, "손절폭이 너무 커서 잃을 위험이 커"
 
     return True, "OK"
@@ -351,18 +342,18 @@ def analyze_coin(ticker):
     reasons = []
     warnings = []
 
-    # 1) 지지선
-    if support * 0.97 <= price <= support * 1.03:
+    # 지지선
+    if support * 0.97 <= price <= support * 1.035:
         score += 2
         entry_score += 1
         reasons.append("- 지지선 근처")
-    elif support * 0.95 <= price <= support * 1.05:
+    elif support * 0.95 <= price <= support * 1.06:
         score += 1
         reasons.append("- 지지선에서 아주 멀진 않아")
     else:
         warnings.append("- 지지선과 거리가 있음")
 
-    # 2) 추세
+    # 추세
     if ma5 > ma10:
         score += 1
         entry_score += 1
@@ -370,66 +361,68 @@ def analyze_coin(ticker):
     else:
         warnings.append("- 최근 흐름이 아직 강하진 않아")
 
-    # 3) RSI
-    if 30 <= rsi <= 60:
+    # RSI
+    if 28 <= rsi <= 65:
         score += 1
         reasons.append(f"- 과열도 아니고 너무 약하지도 않음 ({rsi:.2f})")
-    elif rsi < 30:
+    elif rsi < 28:
         warnings.append(f"- 아직 약한 흐름일 수 있어 ({rsi:.2f})")
     else:
         warnings.append(f"- 이미 좀 오른 상태일 수 있어 ({rsi:.2f})")
 
-    # 4) 거래량 강제 필터
+    # 거래량
     if vol_ratio >= MIN_VOL_RATIO:
         score += 1
         entry_score += 2
         reasons.append(f"- 거래량 좋음 ({vol_ratio:.2f}배)")
+    elif vol_ratio >= 0.30:
+        entry_score += 0
+        reasons.append(f"- 거래량은 완전 나쁘진 않음 ({vol_ratio:.2f}배)")
     else:
         return None
 
-    # 5) 거래량 회복
+    # 거래량 회복
     if volume_recovery_ok:
         entry_score += 1
         reasons.append(f"- 최근 거래량 회복 중 ({volume_recovery_ratio:.2f}배)")
     else:
         warnings.append(f"- 최근 거래량 회복은 아직 약해 ({volume_recovery_ratio:.2f}배)")
 
-    # 6) 연속 하락
+    # 연속 하락
     if detect_bad_flow(df):
-        entry_score -= 2
+        entry_score -= 1
         warnings.append("- 최근 종가 흐름이 계속 밀림")
 
-    # 7) 급등 추격 방지
-    if pump >= 5.0:
-        score -= 2
-        entry_score -= 2
-        warnings.append(f"- 최근 너무 빨리 올랐어 ({pump:.2f}%)")
-    elif pump >= 2.0:
+    # 급등 추격 방지
+    if pump >= 7.0:
+        return None
+    elif pump >= 3.5:
         entry_score -= 1
         warnings.append(f"- 최근 이미 좀 올라서 급하게 사면 불리해 ({pump:.2f}%)")
     else:
         reasons.append(f"- 최근 급하게 오른 상태는 아님 ({pump:.2f}%)")
 
-    # 8) 반등 필수
+    # 반등
     if rebound:
         entry_score += 2
         reasons.append("- 눌렸다가 다시 반등 시작")
     else:
-        return None
+        entry_score -= 1
+        warnings.append("- 반등이 아직 약함")
 
     # 가격 계산
     entry = support * 1.01
     stop = support * 0.97
-    tp = entry * 1.035  # 공격형: 3.5%
+    tp = entry * 1.03  # v2는 3%
 
     entry_gap_pct = ((price - entry) / entry) * 100 if entry > 0 else 999
     tp_gap_pct = ((tp - price) / price) * 100 if price > 0 else -999
     resistance_gap_pct = ((resistance - price) / price) * 100 if price > 0 else -999
 
     # 저항 거리 체크
-    if resistance_gap_pct < 1.0:
+    if resistance_gap_pct < 0.8:
         return None
-    elif resistance_gap_pct < 2.0:
+    elif resistance_gap_pct < 1.5:
         entry_score -= 1
         warnings.append(f"- 위쪽 저항이 가까운 편이야 ({resistance_gap_pct:.2f}%)")
     else:
@@ -456,16 +449,16 @@ def analyze_coin(ticker):
     risk = entry - stop
     reward = tp - entry
     rr = reward / risk if risk > 0 else 0
-    if rr < 0.50:
+    if rr < 0.40:
         return None
 
-    if entry_score < 1:
+    if entry_score < 0:
         return None
 
     # 상태 분류
-    if score >= 3 and entry_score >= MIN_ENTRY_SCORE and entry_gap_pct <= MAX_ENTRY_GAP:
+    if score >= 2 and entry_score >= MIN_ENTRY_SCORE and entry_gap_pct <= MAX_ENTRY_GAP:
         status = "🔥 강한 진입"
-    elif score >= 2 and entry_score >= 1:
+    elif score >= 2 and entry_score >= 0:
         status = "⚡ 단타 가능"
     else:
         status = "관찰"
@@ -594,9 +587,9 @@ def scan():
         key=lambda x: (
             1 if x["status"] == "🔥 강한 진입" else 0,
             1 if x["status"] == "⚡ 단타 가능" else 0,
-            x["score"],
             x["entry_score"],
-            x["tp_gap_pct"]
+            x["tp_gap_pct"],
+            x["score"]
         ),
         reverse=True
     )
@@ -781,7 +774,6 @@ def monitor():
 
         pnl = ((price - coin["entry"]) / coin["entry"] * 100) if coin["entry"] > 0 else 0
 
-        # 손절
         if price <= coin["stop"]:
             try:
                 bithumb.sell_market_order(ticker, balance)
@@ -805,7 +797,6 @@ def monitor():
             except Exception as e:
                 print(f"[손절 오류] {ticker} / {e}")
 
-        # 익절
         elif price >= coin["tp"]:
             try:
                 bithumb.sell_market_order(ticker, balance)
@@ -840,7 +831,7 @@ dispatcher.add_handler(CommandHandler("summary", summary_command))
 
 updater.start_polling(drop_pending_updates=True)
 
-print(f"🚀 공격형 실전 시스템 실행 / 기준시간대: {TIMEZONE}")
+print(f"🚀 공격형 v2 시스템 실행 / 기준시간대: {TIMEZONE}")
 
 last_position_check = 0
 
