@@ -34,6 +34,7 @@ TIMEZONE = "Asia/Seoul"
 # ===== 알림 / 재추천 =====
 SAME_STATUS_COOLDOWN = 1200
 ENTRY_NEAR_RANGE = 0.8
+MIN_REALERT_PRICE_CHANGE = 0.35   # 이전 알림 대비 가격 변화 최소치(%)
 
 # ===== BTC 시장 필터 =====
 BTC_MARKET_FILTER = True
@@ -41,16 +42,18 @@ BTC_CRASH_LOCK_MINUTES = 20
 BTC_CRASH_THRESHOLD = -2.0
 btc_lock_until = 0
 
-# ===== 공격형 v3.3 세팅 =====
+# ===== 공격형 v3.4 세팅 =====
 MIN_TP_GAP = 1.5
 MAX_ENTRY_GAP = 1.5
 MIN_VOL_RATIO = 0.35
+MIN_STRONG_VOL_RATIO = 0.55       # 강한 진입용 거래량 기준 강화
 MIN_ENTRY_SCORE = 1
 MIN_RESISTANCE_GAP = 0.6
+MIN_RECENT_MOVE_PCT = 0.6         # 최근 횡보 코인 제거용 최소 움직임 %
 
 # ===== 본절 보호 =====
-BREAKEVEN_TRIGGER = 1.5   # +1.5% 이상 갔을 때 활성화
-BREAKEVEN_MARGIN = 0.2    # 진입가 +0.2%까지 밀리면 본절 정리
+BREAKEVEN_TRIGGER = 1.5
+BREAKEVEN_MARGIN = 0.2
 
 # ===== 트레일링 익절 옵션 =====
 USE_TRAILING_TP = False
@@ -227,6 +230,17 @@ def detect_volume_recovery(df):
     except Exception:
         return False, 0.0
 
+def detect_recent_move_pct(df, lookback=5):
+    try:
+        recent = df.tail(lookback)
+        high_v = float(recent["high"].max())
+        low_v = float(recent["low"].min())
+        if low_v <= 0:
+            return 0.0
+        return ((high_v - low_v) / low_v) * 100
+    except Exception:
+        return 0.0
+
 # ================= BTC 시장 필터 =================
 def get_btc_market_state():
     global btc_lock_until
@@ -269,6 +283,16 @@ def cleanup_buttons():
     for k in delete_keys:
         button_data_store.pop(k, None)
 
+def price_change_from_last_alert_pct(current_price, last_price):
+    try:
+        current_price = float(current_price)
+        last_price = float(last_price)
+        if last_price <= 0:
+            return 999.0
+        return abs((current_price - last_price) / last_price) * 100
+    except Exception:
+        return 999.0
+
 def should_send_alert(coin, now_ts):
     ticker = coin["ticker"]
     status = coin["status"]
@@ -283,13 +307,22 @@ def should_send_alert(coin, now_ts):
     last_time = last_info.get("time", 0)
     last_entry_score = last_info.get("entry_score", -999)
     last_entry_near = last_info.get("entry_near", False)
+    last_price = last_info.get("price", 0)
 
+    price_delta = price_change_from_last_alert_pct(coin["price"], last_price)
+
+    # 상태가 바뀌거나 진입가 근접이 새로 생기거나 점수 상승이면 허용
     if status != last_status:
         return True
     if entry_near and not last_entry_near:
         return True
     if entry_score > last_entry_score:
         return True
+
+    # 가격 변화가 너무 작으면 재알림 차단
+    if price_delta < MIN_REALERT_PRICE_CHANGE:
+        return False
+
     if now_ts - last_time >= SAME_STATUS_COOLDOWN:
         return True
 
@@ -350,11 +383,16 @@ def analyze_coin(ticker):
     pump = detect_recent_pump(df)
     rebound = detect_rebound(df)
     volume_recovery_ok, volume_recovery_ratio = detect_volume_recovery(df)
+    recent_move_pct = detect_recent_move_pct(df, 5)
 
     score = 0
     entry_score = 0
     reasons = []
     warnings = []
+
+    # 횡보 코인 제거
+    if recent_move_pct < MIN_RECENT_MOVE_PCT:
+        return None
 
     if support * 0.97 <= price <= support * 1.04:
         score += 2
@@ -475,7 +513,8 @@ def analyze_coin(ticker):
     if entry_score < -1:
         return None
 
-    if score >= 2 and entry_score >= MIN_ENTRY_SCORE and entry_gap_pct <= MAX_ENTRY_GAP:
+    # 강한 진입은 거래량 기준 더 빡세게
+    if score >= 2 and entry_score >= MIN_ENTRY_SCORE and entry_gap_pct <= MAX_ENTRY_GAP and vol_ratio >= MIN_STRONG_VOL_RATIO:
         status = "🔥 강한 진입"
     elif score >= 2 and entry_score >= 0:
         status = "⚡ 단타 가능"
@@ -499,6 +538,8 @@ def analyze_coin(ticker):
         "tp_gap_pct": r(tp_gap_pct, 2),
         "resistance_gap_pct": r(resistance_gap_pct, 2),
         "entry_near": entry_near,
+        "vol_ratio": r(vol_ratio, 4),
+        "recent_move_pct": r(recent_move_pct, 2),
         "reason": "\n".join(reasons) if reasons else "- 없음",
         "warning": "\n".join(warnings) if warnings else "- 특별한 경고 없음",
     }
@@ -613,6 +654,7 @@ def scan():
             1 if x["status"] == "🔥 강한 진입" else 0,
             x["entry_score"],
             x["tp_gap_pct"],
+            x["recent_move_pct"],
             x["score"]
         ),
         reverse=True
@@ -629,7 +671,8 @@ def scan():
                 "status": "자동매수완료",
                 "entry_score": coin["entry_score"],
                 "entry_near": True,
-                "tp_type": coin["tp_type"]
+                "tp_type": coin["tp_type"],
+                "price": coin["price"]
             }
             return
         else:
@@ -647,12 +690,17 @@ def scan():
         if coin["tp_type"] != prev.get("tp_type", ""):
             change_reason += f"\n🚀 목표 유형 변화: {coin['tp_type']}"
 
+        price_delta = price_change_from_last_alert_pct(coin["price"], prev.get("price", 0))
+        if price_delta >= MIN_REALERT_PRICE_CHANGE:
+            change_reason += f"\n📊 가격 변화: {price_delta:.2f}%"
+
     recent_alerts[coin["ticker"]] = {
         "time": now_ts,
         "status": coin["status"],
         "entry_score": coin["entry_score"],
         "entry_near": coin.get("entry_near", False),
-        "tp_type": coin["tp_type"]
+        "tp_type": coin["tp_type"],
+        "price": coin["price"]
     }
 
     reply_markup = None
@@ -663,14 +711,12 @@ def scan():
         button_data_store[bid] = {"coin": coin, "created_at": now_ts}
         keyboard = [[InlineKeyboardButton("🔥 매수", callback_data=f"BUY|{bid}")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-
     elif coin["status"] == "🔥 강한 진입":
         status_text = "✅ 지금 타이밍 괜찮음"
         bid = str(uuid.uuid4())[:8]
         button_data_store[bid] = {"coin": coin, "created_at": now_ts}
         keyboard = [[InlineKeyboardButton("🔥 매수", callback_data=f"BUY|{bid}")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-
     elif coin["status"] == "⚡ 단타 가능":
         status_text = "⚡ 짧게 노려볼 수 있는 자리"
     else:
@@ -705,6 +751,7 @@ def scan():
 진입가와 현재가 차이: {fmt_pct(coin['entry_gap_pct'])}
 목표가까지 여유: {fmt_pct(coin['tp_gap_pct'])}
 저항까지 여유: {fmt_pct(coin['resistance_gap_pct'])}
+최근 움직임: {fmt_pct(coin['recent_move_pct'])}
 
 추천 점수: {coin['score']}
 진입 적합도: {coin['entry_score']}
@@ -939,7 +986,7 @@ dispatcher.add_handler(CommandHandler("summary", summary_command))
 
 updater.start_polling(drop_pending_updates=True)
 
-print(f"🚀 공격형 v3.3 시스템 실행 / 기준시간대: {TIMEZONE}")
+print(f"🚀 공격형 v3.4 시스템 실행 / 기준시간대: {TIMEZONE}")
 
 last_position_check = 0
 
