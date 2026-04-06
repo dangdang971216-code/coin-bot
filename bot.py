@@ -17,8 +17,7 @@ API_SECRET = os.getenv("API_SECRET")
 
 SCAN_INTERVAL = 60
 POSITION_CHECK_INTERVAL = 10
-ALERT_COOLDOWN = 1200      # 같은 코인 재알림 제한 20분
-BUTTON_EXPIRE = 600        # 버튼 유효 시간 10분
+BUTTON_EXPIRE = 600
 TOP_TICKERS = 40
 
 FIXED_ENTRY_KRW = 11000
@@ -29,6 +28,10 @@ AUTO_BUY = True
 AUTO_BUY_START_HOUR = 9
 AUTO_BUY_END_HOUR = 18   # 18시는 포함 안 함 → 09:00~17:59
 
+# ===== 같은 상태 반복 알림 제한 =====
+recent_alerts = {}
+SAME_STATUS_COOLDOWN = 1800   # 30분
+
 # ================= 기본 체크 =================
 if not TELEGRAM_TOKEN or not CHAT_ID or not API_KEY or not API_SECRET:
     raise ValueError("환경변수(API_KEY, API_SECRET, TELEGRAM_TOKEN, CHAT_ID) 중 비어 있는 값이 있어요.")
@@ -38,7 +41,6 @@ bithumb = pybithumb.Bithumb(API_KEY, API_SECRET)
 
 active_positions = {}
 button_data_store = {}
-recent_alerts = {}
 
 # ================= 유틸 =================
 def r(x, n=4):
@@ -129,7 +131,6 @@ def detect_rebound(df):
     closes = list(df.tail(5)["close"])
     if len(closes) < 5:
         return False
-    # 눌렸다가 마지막에 다시 드는지
     return closes[-3] > closes[-2] and closes[-1] > closes[-2]
 
 def detect_recent_pump(df):
@@ -147,11 +148,11 @@ def detect_volume_recovery(df):
         if prev_vol <= 0:
             return False, 0.0
         ratio = recent_vol / prev_vol
-        return ratio >= 1.00, ratio   # 완화
+        return ratio >= 0.90, ratio   # 완화
     except Exception:
         return False, 0.0
 
-# ================= 버튼 정리 =================
+# ================= 알림 관련 =================
 def cleanup_buttons():
     now = time.time()
     delete_keys = []
@@ -161,6 +162,27 @@ def cleanup_buttons():
 
     for k in delete_keys:
         button_data_store.pop(k, None)
+
+def should_send_alert(coin, now):
+    ticker = coin["ticker"]
+    status = coin["status"]
+
+    if ticker not in recent_alerts:
+        return True
+
+    last_info = recent_alerts[ticker]
+    last_status = last_info.get("status")
+    last_time = last_info.get("time", 0)
+
+    # 상태 바뀌면 바로 알림
+    if status != last_status:
+        return True
+
+    # 같은 상태면 쿨다운 지난 뒤에만
+    if now - last_time >= SAME_STATUS_COOLDOWN:
+        return True
+
+    return False
 
 # ================= 매수 전 방어 =================
 def pre_buy_check(ticker, coin):
@@ -251,11 +273,11 @@ def analyze_coin(ticker):
         warnings.append(f"- 이미 좀 오른 상태일 수 있어 ({rsi:.2f})")
 
     # 4) 거래량 기본 체크 (완화)
-    if vol_ratio >= 0.65:
+    if vol_ratio >= 0.55:
         score += 1
         entry_score += 1
         reasons.append(f"- 거래량이 평소보다 들어오고 있어 ({vol_ratio:.2f}배)")
-    elif vol_ratio >= 0.45:
+    elif vol_ratio >= 0.35:
         reasons.append(f"- 거래량은 아주 나쁘진 않아 ({vol_ratio:.2f}배)")
     else:
         entry_score -= 1
@@ -327,7 +349,7 @@ def analyze_coin(ticker):
         return None
 
     # ===== 상태 판정 완화 =====
-    if score >= 2 and entry_score >= 2:
+    if score >= 2 and entry_score >= 1:
         status = "진입 가능"
     elif score >= 1:
         status = "관찰 추천"
@@ -416,11 +438,8 @@ def scan():
     candidates = []
 
     for t in tickers[:TOP_TICKERS]:
-        if t in recent_alerts and now - recent_alerts[t] < ALERT_COOLDOWN:
-            continue
-
         coin = analyze_coin(t)
-        if coin and coin["status"] != "관망":
+        if coin and coin["status"] in ["관찰 추천", "진입 가능"]:
             candidates.append(coin)
 
     if not candidates:
@@ -437,7 +456,15 @@ def scan():
     )
 
     coin = candidates[0]
-    recent_alerts[coin["ticker"]] = now
+
+    # 같은 상태 반복 알림 차단
+    if not should_send_alert(coin, now):
+        return
+
+    recent_alerts[coin["ticker"]] = {
+        "time": now,
+        "status": coin["status"]
+    }
 
     # 자동매수 먼저 시도
     if coin["status"] == "진입 가능" and AUTO_BUY and is_weekday_auto_time():
