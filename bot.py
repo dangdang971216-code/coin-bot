@@ -1,7 +1,6 @@
 import os
 import time
 import json
-import math
 import traceback
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -30,7 +29,7 @@ bithumb = pybithumb.Bithumb(API_KEY, API_SECRET)
 TIMEZONE = "Asia/Seoul"
 LOG_FILE = "trade_log.json"
 
-SCAN_INTERVAL = 20               # 공격형이라 자주 스캔
+SCAN_INTERVAL = 15
 POSITION_CHECK_INTERVAL = 5
 LOOP_SLEEP = 1
 
@@ -38,52 +37,73 @@ TOP_TICKERS = 100
 MIN_ORDER_KRW = 5000
 FIXED_ENTRY_KRW = 11000
 
-# 완전 자동
 AUTO_BUY = True
-
-# 거래 시간대
 AUTO_BUY_START_HOUR = 7
 AUTO_BUY_END_HOUR = 23
 
-# BTC 필터
-BTC_FILTER_ON = True
-BTC_CRASH_BLOCK_PCT = -1.5       # 최근 기준 급락이면 신규 진입 금지
-BTC_MA_FILTER = True
-
-# 손익 관리
-BASE_STOP_LOSS_PCT = -1.7        # 기본 손절
-BASE_TP_PCT = 2.8                # 기본 익절
-TRAIL_START_PCT = 2.2            # 이익이 이 정도 나면 트레일링 시작
-TRAIL_BACKOFF_PCT = 0.9          # 고점 대비 이 정도 밀리면 익절
-BREAKEVEN_TRIGGER_PCT = 1.3      # 이익 보호
-BREAKEVEN_BUFFER_PCT = 0.15
-
-# 공격형 전략 파라미터
-PREPUMP_MIN_CHANGE_PCT = 0.8
-PREPUMP_MAX_CHANGE_PCT = 4.8
-PREPUMP_MIN_VOL_RATIO = 1.8
-PREPUMP_MIN_RSI = 48
-PREPUMP_MAX_RSI = 72
-
-PULLBACK_MIN_TOTAL_PUMP_PCT = 6.0
-PULLBACK_REBOUND_MIN_PCT = 0.7
-PULLBACK_MIN_VOL_RATIO = 1.15
-
-# 알림 쿨다운
-SIGNAL_COOLDOWN_SEC = 600
-BTC_REPORT_INTERVAL = 3600
-STATUS_REPORT_INTERVAL = 1800
-
-# 동시 보유
 MAX_HOLDINGS = 1
 
 # =========================
-# 전역 상태
+# BTC 필터
+# =========================
+BTC_FILTER_ON = True
+BTC_CRASH_BLOCK_PCT = -1.5
+BTC_MA_FILTER = True
+
+# =========================
+# 기본 손익 관리
+# =========================
+BASE_STOP_LOSS_PCT = -1.7
+BASE_TP_PCT = 2.8
+TRAIL_START_PCT = 2.2
+TRAIL_BACKOFF_PCT = 0.9
+BREAKEVEN_TRIGGER_PCT = 1.3
+BREAKEVEN_BUFFER_PCT = 0.15
+
+# =========================
+# EARLY (초조기 감지)
+# =========================
+EARLY_MIN_CHANGE_PCT = 0.2
+EARLY_MAX_CHANGE_PCT = 2.2
+EARLY_MIN_VOL_RATIO = 1.15
+EARLY_MIN_RSI = 42
+EARLY_MAX_RSI = 66
+EARLY_MIN_RANGE_PCT = 0.45
+
+# =========================
+# PREPUMP (급등 직전)
+# =========================
+PREPUMP_MIN_CHANGE_PCT = 0.6
+PREPUMP_MAX_CHANGE_PCT = 4.8
+PREPUMP_MIN_VOL_RATIO = 1.5
+PREPUMP_MIN_RSI = 46
+PREPUMP_MAX_RSI = 72
+PREPUMP_MIN_RANGE_PCT = 0.8
+
+# =========================
+# PULLBACK (급등 후 눌림)
+# =========================
+PULLBACK_MIN_TOTAL_PUMP_PCT = 5.0
+PULLBACK_REBOUND_MIN_PCT = 0.5
+PULLBACK_MIN_VOL_RATIO = 1.05
+
+# =========================
+# 리포트
+# =========================
+BTC_REPORT_INTERVAL = 3600
+STATUS_REPORT_INTERVAL = 1800
+EARLY_REPORT_INTERVAL = 300
+
+last_btc_report_time = 0
+last_status_report_time = 0
+last_early_report_time = 0
+
+# =========================
+# 상태 저장
 # =========================
 active_positions = {}
 recent_signal_alerts = {}
-last_btc_report_time = 0
-last_status_report_time = 0
+recent_early_alerts = {}
 
 # =========================
 # 유틸
@@ -132,6 +152,9 @@ def send(msg: str):
     except Exception as e:
         print(f"[텔레그램 오류] {e}")
 
+# =========================
+# 로그
+# =========================
 def load_logs():
     if os.path.exists(LOG_FILE):
         try:
@@ -168,8 +191,7 @@ def get_price(ticker: str) -> float:
 
 def get_ohlcv(ticker: str, interval: str = "minute3"):
     try:
-        df = pybithumb.get_ohlcv(ticker, interval=interval)
-        return df
+        return pybithumb.get_ohlcv(ticker, interval=interval)
     except Exception:
         return None
 
@@ -179,15 +201,6 @@ def get_balance(ticker: str) -> float:
         return float(bal[0] or 0)
     except Exception:
         return 0.0
-
-def get_avg_buy_price(ticker: str):
-    try:
-        bal = bithumb.get_balance(ticker)
-        # pybithumb balance tuple 구조에서 avg price는 환경마다 다를 수 있어 fallback 처리
-        # 보통 (coin, in_use_coin, total_coin, krw, in_use_krw, total_krw) 형태여서 평균가 직접 안 나옴
-        return None
-    except Exception:
-        return None
 
 # =========================
 # 지표
@@ -199,12 +212,18 @@ def calculate_rsi(df, period=14):
     rs = gain / loss
     return 100 - (100 / (1 + rs))
 
+def ma(df, period):
+    try:
+        return float(df["close"].rolling(period).mean().iloc[-1])
+    except Exception:
+        return 0.0
+
 def get_vol_ratio(df, short_n=5, long_n=20):
     try:
-        if len(df) < long_n + 1:
+        if len(df) < short_n + long_n:
             return 0.0
         recent = float(df["volume"].tail(short_n).mean())
-        prev = float(df["volume"].tail(long_n + short_n).head(long_n).mean())
+        prev = float(df["volume"].tail(short_n + long_n).head(long_n).mean())
         if prev <= 0:
             return 0.0
         return recent / prev
@@ -233,14 +252,26 @@ def get_range_pct(df, n=10):
     except Exception:
         return 0.0
 
-def ma(df, period):
+def short_trend_up(df):
     try:
-        return float(df["close"].rolling(period).mean().iloc[-1])
+        closes = list(df.tail(3)["close"])
+        if len(closes) < 3:
+            return False
+        return closes[-1] >= closes[-2] and closes[-2] >= closes[-3]
     except Exception:
-        return 0.0
+        return False
+
+def rebound_now(df):
+    try:
+        closes = list(df.tail(4)["close"])
+        if len(closes) < 4:
+            return False
+        return closes[-2] < closes[-3] and closes[-1] > closes[-2]
+    except Exception:
+        return False
 
 # =========================
-# BTC 필터 / 리포트
+# BTC 필터
 # =========================
 def get_btc_df():
     for interval in ["minute60", "minute30", "minute10"]:
@@ -268,7 +299,7 @@ def get_btc_market_state():
         return False, f"BTC 급락 차단 ({recent_drop_pct:.2f}%)", recent_drop_pct
 
     if BTC_MA_FILTER and ma20 > 0 and price < ma20 * 0.992:
-        return False, "BTC가 MA20 아래라 시장 분위기 약함", recent_drop_pct
+        return False, "BTC가 MA20 아래라 약세", recent_drop_pct
 
     return True, "시장 분위기 무난", recent_drop_pct
 
@@ -287,19 +318,19 @@ def analyze_btc_flow():
 
     if change_pct <= -2.0:
         state = "🚨 강한 하락"
-        desc = "시장 약세가 강해서 신규 진입은 조심해야 해."
+        desc = "공격형도 신규 진입은 많이 조심해야 해."
     elif change_pct <= -0.8:
         state = "⚠️ 약한 하락"
-        desc = "장 분위기가 살짝 약해. 강한 코인만 봐야 해."
+        desc = "약한 장이라 강한 코인만 살아남아."
     elif change_pct >= 2.0:
         state = "🔥 강한 상승"
-        desc = "시장 분위기가 좋아서 알트 반응 확률이 높아."
+        desc = "시장 분위기 좋음."
     elif change_pct >= 0.8:
         state = "👍 완만한 상승"
-        desc = "무난한 편이라 종목 선별이 중요해."
+        desc = "무난한 장. 종목 선별 중요."
     else:
         state = "😐 횡보"
-        desc = "방향성이 강하지 않아서 종목별 차이가 커."
+        desc = "시장 자체 힘은 애매함."
 
     loc = "단기 MA 위" if price >= ma5v and price >= ma20v else "단기 MA 아래/혼조"
 
@@ -316,6 +347,131 @@ def analyze_btc_flow():
 """
 
 # =========================
+# 동적 리스크 관리
+# =========================
+def dynamic_stop_loss_pct(vol_ratio, range_pct, strategy):
+    stop = BASE_STOP_LOSS_PCT
+
+    if strategy == "EARLY":
+        stop -= 0.15
+    elif strategy == "PULLBACK":
+        stop -= 0.10
+
+    if vol_ratio >= 2.3:
+        stop -= 0.15
+    if range_pct >= 3.5:
+        stop -= 0.15
+
+    return max(stop, -2.3)
+
+def dynamic_take_profit_pct(vol_ratio, range_pct, strategy):
+    tp = BASE_TP_PCT
+
+    if strategy == "EARLY":
+        tp += 0.4
+    elif strategy == "PREPUMP":
+        tp += 0.2
+    elif strategy == "PULLBACK":
+        tp += 0.15
+
+    if vol_ratio >= 2.3:
+        tp += 0.35
+    if range_pct >= 3.5:
+        tp += 0.25
+
+    return min(tp, 4.8)
+
+def dynamic_time_stop_sec(vol_ratio, range_pct, strategy):
+    if strategy == "EARLY":
+        base = 900
+    elif strategy == "PREPUMP":
+        base = 600
+    else:
+        base = 720
+
+    if vol_ratio >= 2.5:
+        base -= 120
+    elif vol_ratio < 1.3:
+        base += 120
+
+    if range_pct >= 4.0:
+        base -= 60
+    elif range_pct < 1.0:
+        base += 120
+
+    return max(240, min(base, 1500))
+
+# =========================
+# 전략 0: 초조기 감지
+# =========================
+def analyze_early_entry(ticker: str):
+    df = get_ohlcv(ticker, "minute3")
+    if df is None or len(df) < 30:
+        return None
+
+    current_price = get_price(ticker)
+    if current_price <= 0:
+        return None
+
+    change_pct = get_recent_change_pct(df, 5)
+    vol_ratio = get_vol_ratio(df, 4, 18)
+    rsi = float(calculate_rsi(df).iloc[-1])
+    ma5v = ma(df, 5)
+    ma10v = ma(df, 10)
+    range_pct = get_range_pct(df, 10)
+    trend_up = short_trend_up(df)
+
+    if change_pct < EARLY_MIN_CHANGE_PCT or change_pct > EARLY_MAX_CHANGE_PCT:
+        return None
+    if vol_ratio < EARLY_MIN_VOL_RATIO:
+        return None
+    if rsi < EARLY_MIN_RSI or rsi > EARLY_MAX_RSI:
+        return None
+    if range_pct < EARLY_MIN_RANGE_PCT:
+        return None
+    if ma5v <= 0 or ma10v <= 0:
+        return None
+    if ma5v < ma10v * 0.997:
+        return None
+
+    early_score = 0
+    if ma5v >= ma10v:
+        early_score += 1
+    if trend_up:
+        early_score += 1
+    if vol_ratio >= 1.4:
+        early_score += 1
+    if change_pct >= 0.5:
+        early_score += 1
+    if 46 <= rsi <= 62:
+        early_score += 1
+
+    stop_loss_pct = dynamic_stop_loss_pct(vol_ratio, range_pct, "EARLY")
+    take_profit_pct = dynamic_take_profit_pct(vol_ratio, range_pct, "EARLY")
+    time_stop_sec = dynamic_time_stop_sec(vol_ratio, range_pct, "EARLY")
+
+    return {
+        "ticker": ticker,
+        "strategy": "EARLY",
+        "current_price": current_price,
+        "vol_ratio": r(vol_ratio, 2),
+        "change_pct": r(change_pct, 2),
+        "rsi": r(rsi, 2),
+        "range_pct": r(range_pct, 2),
+        "early_score": early_score,
+        "stop_loss_pct": stop_loss_pct,
+        "take_profit_pct": take_profit_pct,
+        "time_stop_sec": time_stop_sec,
+        "reason": (
+            f"- 초조기 조짐\n"
+            f"- 거래량 {vol_ratio:.2f}배\n"
+            f"- 최근 상승 {change_pct:.2f}%\n"
+            f"- RSI {rsi:.2f}\n"
+            f"- 조기점수 {early_score}"
+        )
+    }
+
+# =========================
 # 전략 1: 급등 직전
 # =========================
 def analyze_prepump_entry(ticker: str):
@@ -327,8 +483,7 @@ def analyze_prepump_entry(ticker: str):
     if current_price <= 0:
         return None
 
-    rsi_series = calculate_rsi(df)
-    rsi = float(rsi_series.iloc[-1])
+    rsi = float(calculate_rsi(df).iloc[-1])
     vol_ratio = get_vol_ratio(df, 5, 20)
     change_pct = get_recent_change_pct(df, 5)
     ma5v = ma(df, 5)
@@ -341,14 +496,14 @@ def analyze_prepump_entry(ticker: str):
         return None
     if rsi < PREPUMP_MIN_RSI or rsi > PREPUMP_MAX_RSI:
         return None
+    if range_pct < PREPUMP_MIN_RANGE_PCT:
+        return None
     if ma5v <= 0 or ma10v <= 0 or ma5v < ma10v:
         return None
-    if range_pct < 0.8:
-        return None
 
-    stop_loss_pct = dynamic_stop_loss_pct(vol_ratio, range_pct, strategy="PREPUMP")
-    take_profit_pct = dynamic_take_profit_pct(vol_ratio, range_pct, strategy="PREPUMP")
-    time_stop_sec = dynamic_time_stop_sec(vol_ratio, range_pct, strategy="PREPUMP")
+    stop_loss_pct = dynamic_stop_loss_pct(vol_ratio, range_pct, "PREPUMP")
+    take_profit_pct = dynamic_take_profit_pct(vol_ratio, range_pct, "PREPUMP")
+    time_stop_sec = dynamic_time_stop_sec(vol_ratio, range_pct, "PREPUMP")
 
     return {
         "ticker": ticker,
@@ -415,9 +570,9 @@ def analyze_pullback_entry(ticker: str):
 
     range_pct = get_range_pct(df, 12)
 
-    stop_loss_pct = dynamic_stop_loss_pct(vol_ratio, range_pct, strategy="PULLBACK")
-    take_profit_pct = dynamic_take_profit_pct(vol_ratio, range_pct, strategy="PULLBACK")
-    time_stop_sec = dynamic_time_stop_sec(vol_ratio, range_pct, strategy="PULLBACK")
+    stop_loss_pct = dynamic_stop_loss_pct(vol_ratio, range_pct, "PULLBACK")
+    take_profit_pct = dynamic_take_profit_pct(vol_ratio, range_pct, "PULLBACK")
+    time_stop_sec = dynamic_time_stop_sec(vol_ratio, range_pct, "PULLBACK")
 
     return {
         "ticker": ticker,
@@ -434,65 +589,9 @@ def analyze_pullback_entry(ticker: str):
             f"- 급등 후 눌림 반등\n"
             f"- 최근 급등 {total_pump_pct:.2f}%\n"
             f"- 반등 {rebound_pct:.2f}%\n"
-            f"- 거래량 {vol_ratio:.2f}배\n"
-            f"- 단기 MA 상향"
+            f"- 거래량 {vol_ratio:.2f}배"
         )
     }
-
-# =========================
-# 동적 손절 / 익절 / 시간손절
-# =========================
-def dynamic_stop_loss_pct(vol_ratio, range_pct, strategy="PREPUMP"):
-    base = BASE_STOP_LOSS_PCT
-
-    # 변동성 높고 거래량 높으면 손절 아주 약간 넓힘
-    if vol_ratio >= 2.5:
-        base -= 0.2
-    if range_pct >= 4.0:
-        base -= 0.2
-
-    # 눌림 전략은 약간 더 여유
-    if strategy == "PULLBACK":
-        base -= 0.15
-
-    # 너무 넓어지지 않게 제한
-    return max(base, -2.3)
-
-def dynamic_take_profit_pct(vol_ratio, range_pct, strategy="PREPUMP"):
-    base = BASE_TP_PCT
-
-    if vol_ratio >= 2.5:
-        base += 0.5
-    if range_pct >= 4.0:
-        base += 0.4
-
-    if strategy == "PULLBACK":
-        base += 0.2
-
-    return min(base, 4.5)
-
-def dynamic_time_stop_sec(vol_ratio, range_pct, strategy="PREPUMP"):
-    # 공격형이라 기본은 짧게
-    # 활발한 코인은 더 짧게 판단
-    # 덜 활발하면 조금 더 기다리되 너무 오래는 안 감
-    base = 600  # 10분
-
-    if strategy == "PREPUMP":
-        base = 480  # 8분
-    elif strategy == "PULLBACK":
-        base = 720  # 12분
-
-    if vol_ratio >= 2.5:
-        base -= 120
-    elif vol_ratio < 1.4:
-        base += 120
-
-    if range_pct >= 4.0:
-        base -= 60
-    elif range_pct < 1.2:
-        base += 120
-
-    return max(240, min(base, 1200))  # 4분 ~ 20분
 
 # =========================
 # 주문
@@ -500,13 +599,10 @@ def dynamic_time_stop_sec(vol_ratio, range_pct, strategy="PREPUMP"):
 def calc_order_qty(entry_price: float):
     if entry_price <= 0:
         return 0.0
-
     qty = FIXED_ENTRY_KRW / entry_price
     qty = round(qty, 8)
-
     if qty * entry_price < MIN_ORDER_KRW:
         qty = round((MIN_ORDER_KRW / entry_price) * 1.01, 8)
-
     return qty
 
 def build_position(signal, filled_entry, filled_qty):
@@ -527,7 +623,6 @@ def build_position(signal, filled_entry, filled_qty):
 
 def buy_market(signal):
     ticker = signal["ticker"]
-
     entry_price = get_price(ticker)
     if entry_price <= 0:
         return False, "현재가 조회 실패"
@@ -567,41 +662,108 @@ def buy_market(signal):
             "reason": signal["reason"],
         })
 
-        return True, {
-            "entry": filled_entry,
-            "qty": filled_qty,
-            "raw": result
-        }
-
+        return True, {"entry": filled_entry, "qty": filled_qty}
     except Exception as e:
         return False, str(e)
 
-def sell_market(ticker, balance):
-    try:
-        return bithumb.sell_market_order(ticker, balance)
-    except Exception as e:
-        raise e
-
 # =========================
-# 시그널 선택
+# 점수
 # =========================
 def signal_score(signal):
-    score = 0.0
+    s = 0.0
+    strategy = signal["strategy"]
 
-    if signal["strategy"] == "PREPUMP":
-        score += 5
-        score += min(signal["vol_ratio"], 5.0)
-        score += min(signal["change_pct"], 5.0) * 0.8
-    else:
-        score += 4
-        score += min(signal["vol_ratio"], 4.0)
-        score += min(signal["rebound_pct"], 3.0)
+    if strategy == "EARLY":
+        s += 3.0
+        s += signal.get("early_score", 0) * 0.9
+        s += min(signal.get("vol_ratio", 0), 4.0) * 0.8
+        s += min(signal.get("change_pct", 0), 3.0) * 0.5
 
-    return score
+    elif strategy == "PREPUMP":
+        s += 5.0
+        s += min(signal.get("vol_ratio", 0), 5.0)
+        s += min(signal.get("change_pct", 0), 5.0) * 0.8
+
+    elif strategy == "PULLBACK":
+        s += 4.3
+        s += min(signal.get("vol_ratio", 0), 4.0)
+        s += min(signal.get("rebound_pct", 0), 3.0) * 0.8
+
+    return s
+
+def should_auto_buy_signal(signal):
+    strategy = signal["strategy"]
+
+    if strategy == "EARLY":
+        # EARLY는 더 엄격하게
+        if signal.get("early_score", 0) < 4:
+            return False
+        if signal.get("vol_ratio", 0) < 1.35:
+            return False
+        if signal.get("change_pct", 0) < 0.35:
+            return False
+        return True
+
+    if strategy == "PREPUMP":
+        return True
+
+    if strategy == "PULLBACK":
+        return True
+
+    return False
 
 def cooldown_ok(ticker):
     last = recent_signal_alerts.get(ticker, 0)
-    return (time.time() - last) >= SIGNAL_COOLDOWN_SEC
+    return (time.time() - last) >= 600
+
+# =========================
+# 초조기 알림 전용
+# =========================
+def scan_early_watchlist():
+    global recent_early_alerts
+
+    try:
+        tickers = pybithumb.get_tickers()
+    except Exception as e:
+        print(f"[EARLY 감지 오류] {e}")
+        return
+
+    results = []
+    for ticker in tickers[:TOP_TICKERS]:
+        if ticker == "BTC":
+            continue
+        signal = analyze_early_entry(ticker)
+        if signal:
+            results.append(signal)
+
+    if not results:
+        return
+
+    results.sort(key=signal_score, reverse=True)
+    top = results[:5]
+
+    lines = []
+    now_ts = time.time()
+
+    for item in top:
+        ticker = item["ticker"]
+        prev = recent_early_alerts.get(ticker, 0)
+        if now_ts - prev < EARLY_REPORT_INTERVAL:
+            continue
+        recent_early_alerts[ticker] = now_ts
+
+        lines.append(
+            f"• {ticker} / {fmt_price(item['current_price'])} / 상승 {item['change_pct']:.2f}% / 거래량 {item['vol_ratio']:.2f}배 / RSI {item['rsi']:.2f} / 조기점수 {item['early_score']}"
+        )
+
+    if not lines:
+        return
+
+    send(
+        "👀 초조기 후보 감지\n\n"
+        + "\n".join(lines)
+        + "\n\n아직 완전 진입 전일 수 있지만 오르기 직전 조짐 후보야."
+    )
 
 # =========================
 # 자동 진입 스캔
@@ -609,10 +771,8 @@ def cooldown_ok(ticker):
 def scan_and_auto_trade():
     if not AUTO_BUY:
         return
-
     if not is_auto_time():
         return
-
     if len(active_positions) >= MAX_HOLDINGS:
         return
 
@@ -627,21 +787,22 @@ def scan_and_auto_trade():
         print(f"[티커 조회 오류] {e}")
         return
 
-    if not tickers:
-        return
-
     candidates = []
 
     for ticker in tickers[:TOP_TICKERS]:
         if ticker == "BTC":
             continue
 
+        early = analyze_early_entry(ticker)
+        if early and should_auto_buy_signal(early):
+            candidates.append(early)
+
         pre = analyze_prepump_entry(ticker)
-        if pre:
+        if pre and should_auto_buy_signal(pre):
             candidates.append(pre)
 
         pull = analyze_pullback_entry(ticker)
-        if pull:
+        if pull and should_auto_buy_signal(pull):
             candidates.append(pull)
 
     if not candidates:
@@ -708,21 +869,16 @@ def monitor_positions():
             entry_price = float(pos["entry_price"])
             pnl_pct = ((current_price - entry_price) / entry_price) * 100 if entry_price > 0 else 0.0
 
-            # 고점 갱신
             if current_price > pos["peak_price"]:
                 pos["peak_price"] = current_price
 
-            # 손절가 / 익절가
             stop_price = entry_price * (1 + pos["stop_loss_pct"] / 100)
             tp_price = entry_price * (1 + pos["take_profit_pct"] / 100)
-
-            # 시간손절
             held_sec = time.time() - pos["entered_at"]
+
             if held_sec >= pos["time_stop_sec"]:
-                # 시간손절 시 기준:
-                # 이익이 아주 작거나 마이너스면 바로 정리
                 if pnl_pct < 0.8:
-                    sell_market(ticker, balance)
+                    bithumb.sell_market_order(ticker, balance)
                     add_log({
                         "time": int(time.time()),
                         "type": "TIME_STOP",
@@ -744,15 +900,14 @@ def monitor_positions():
 📈 수익률: {fmt_pct(pnl_pct)}
 ⏰ 보유시간: {int(held_sec/60)}분
 
-정해진 시간 안에 힘이 안 붙어서 정리했어.
+시간 안에 힘이 안 붙어서 정리했어.
 """
                     )
                     remove_list.append(ticker)
                     continue
 
-            # 일반 손절
             if current_price <= stop_price:
-                sell_market(ticker, balance)
+                bithumb.sell_market_order(ticker, balance)
                 add_log({
                     "time": int(time.time()),
                     "type": "STOP",
@@ -776,14 +931,13 @@ def monitor_positions():
                 remove_list.append(ticker)
                 continue
 
-            # 본절 보호
             if pnl_pct >= BREAKEVEN_TRIGGER_PCT:
                 pos["breakeven_armed"] = True
 
             if pos["breakeven_armed"]:
                 be_price = entry_price * (1 + BREAKEVEN_BUFFER_PCT / 100)
                 if current_price <= be_price:
-                    sell_market(ticker, balance)
+                    bithumb.sell_market_order(ticker, balance)
                     add_log({
                         "time": int(time.time()),
                         "type": "BREAKEVEN",
@@ -807,14 +961,13 @@ def monitor_positions():
                     remove_list.append(ticker)
                     continue
 
-            # 트레일링
             if pnl_pct >= TRAIL_START_PCT:
                 pos["trailing_armed"] = True
 
             if pos["trailing_armed"]:
                 trail_stop = pos["peak_price"] * (1 - TRAIL_BACKOFF_PCT / 100)
                 if current_price <= trail_stop:
-                    sell_market(ticker, balance)
+                    bithumb.sell_market_order(ticker, balance)
                     add_log({
                         "time": int(time.time()),
                         "type": "TRAIL_TP",
@@ -838,9 +991,8 @@ def monitor_positions():
                     remove_list.append(ticker)
                     continue
 
-            # 일반 익절
             if current_price >= tp_price:
-                sell_market(ticker, balance)
+                bithumb.sell_market_order(ticker, balance)
                 add_log({
                     "time": int(time.time()),
                     "type": "TP",
@@ -930,7 +1082,7 @@ dispatcher.add_handler(CommandHandler("status", status_command))
 
 updater.start_polling(drop_pending_updates=True)
 
-print(f"🚀 완전 자동 공격형 봇 실행 / {TIMEZONE}")
+print(f"🚀 초조기 포함 완전 자동 공격형 봇 실행 / {TIMEZONE}")
 
 last_scan_time = 0
 last_position_check = 0
@@ -968,5 +1120,12 @@ while True:
         except Exception as e:
             print(f"[상태 리포트 오류] {e}")
         last_status_report_time = now_ts
+
+    if now_ts - last_early_report_time >= EARLY_REPORT_INTERVAL:
+        try:
+            scan_early_watchlist()
+        except Exception as e:
+            print(f"[초조기 후보 리포트 오류] {e}")
+        last_early_report_time = now_ts
 
     time.sleep(LOOP_SLEEP)
