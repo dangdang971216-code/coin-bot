@@ -1,6 +1,7 @@
 import os
 import time
 import json
+import math
 import traceback
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -12,7 +13,7 @@ from telegram.ext import Updater, CommandHandler, CallbackContext
 # =========================
 # 버전
 # =========================
-BOT_VERSION = "수익률 우선 풀공격형 v2.2"
+BOT_VERSION = "수익률 우선 풀공격형 v2.3"
 
 # =========================
 # 환경변수
@@ -42,9 +43,13 @@ TOP_TICKERS = 100
 MIN_ORDER_KRW = 5000
 
 # 소액 계좌용 보수적 주문
-MAX_ENTRY_KRW = 10500
-KRW_USE_RATIO = 0.90
-ORDER_BUFFER_KRW = 300
+MAX_ENTRY_KRW = 10000
+KRW_USE_RATIO = 0.88
+ORDER_BUFFER_KRW = 500
+
+# 시장가 매수 안전 장치
+MARKET_BUY_SLIPPAGE = 1.05
+RETRY_KRW_LEVELS = [1.00, 0.92, 0.85]
 
 AUTO_BUY = True
 AUTO_BUY_START_HOUR = 7
@@ -223,6 +228,29 @@ def get_price(ticker: str) -> float:
     except Exception:
         return -1
 
+def get_orderbook_best_ask(ticker: str) -> float:
+    try:
+        ob = pybithumb.get_orderbook(ticker)
+        if not ob:
+            return -1
+
+        # 형태 1
+        if isinstance(ob, dict) and "asks" in ob and ob["asks"]:
+            ask0 = ob["asks"][0]
+            if isinstance(ask0, dict):
+                return float(ask0.get("price", -1))
+
+        # 형태 2
+        if isinstance(ob, dict) and "data" in ob and "asks" in ob["data"] and ob["data"]["asks"]:
+            ask0 = ob["data"]["asks"][0]
+            if isinstance(ask0, dict):
+                return float(ask0.get("price", -1))
+
+        return -1
+    except Exception as e:
+        print("[ORDERBOOK ERROR]", ticker, e)
+        return -1
+
 def get_ohlcv(ticker: str, interval: str = "minute3"):
     try:
         return pybithumb.get_ohlcv(ticker, interval=interval)
@@ -238,8 +266,6 @@ def get_balance(ticker: str) -> float:
 
 def get_krw_balance():
     try:
-        # KRW 자체가 아니라 BTC 같은 티커로 조회해야
-        # (보유코인, 주문중코인, 보유원화, 주문중원화) 형태가 안정적으로 오는 경우가 많음
         bal = bithumb.get_balance("BTC")
         print("[KRW BALANCE RAW]", bal)
 
@@ -683,24 +709,32 @@ def analyze_pullback_entry(ticker: str):
 # =========================
 # 주문
 # =========================
-def get_safe_use_krw():
+def get_safe_use_krw(multiplier: float = 1.0):
     krw = get_krw_balance()
     use_krw = min(krw * KRW_USE_RATIO, MAX_ENTRY_KRW)
     use_krw = use_krw - ORDER_BUFFER_KRW
+    use_krw = use_krw * multiplier
     return max(use_krw, 0)
 
-def calc_order_qty(entry_price: float):
+def calc_order_qty(ticker: str, entry_price: float, multiplier: float = 1.0):
     if entry_price <= 0:
-        return 0.0
+        return 0.0, 0.0, 0.0
 
-    use_krw = get_safe_use_krw()
-    print("[ORDER CALC] use_krw=", use_krw, "entry_price=", entry_price)
+    best_ask = get_orderbook_best_ask(ticker)
+    if best_ask <= 0:
+        best_ask = entry_price
+
+    safe_price = max(entry_price, best_ask) * MARKET_BUY_SLIPPAGE
+    use_krw = get_safe_use_krw(multiplier)
+
+    print("[ORDER CALC]", ticker, "entry=", entry_price, "ask=", best_ask, "safe=", safe_price, "use_krw=", use_krw)
 
     if use_krw < MIN_ORDER_KRW:
-        return 0.0
+        return 0.0, use_krw, safe_price
 
-    qty = use_krw / entry_price
-    return round(qty, 8)
+    qty = use_krw / safe_price
+    qty = math.floor(qty * 100000000) / 100000000
+    return qty, use_krw, safe_price
 
 def build_position(signal, filled_entry, filled_qty):
     return {
@@ -727,50 +761,72 @@ def buy_market(signal):
     if entry_price <= 0:
         return False, "현재가를 불러오지 못했어"
 
-    qty = calc_order_qty(entry_price)
-    use_krw = get_safe_use_krw()
-
-    if qty <= 0:
-        krw = get_krw_balance()
-        return False, f"원화 잔고가 부족해서 매수하지 않았어 (사용 가능 원화: {fmt_price(krw)})"
-
     before_balance = get_balance(ticker)
+    last_error = ""
 
-    try:
-        result = bithumb.buy_market_order(ticker, qty)
-        time.sleep(1.5)
+    for multiplier in RETRY_KRW_LEVELS:
+        qty, use_krw, safe_price = calc_order_qty(ticker, entry_price, multiplier)
 
-        after_balance = get_balance(ticker)
-        filled_qty = round(after_balance - before_balance, 8)
+        if qty <= 0:
+            krw = get_krw_balance()
+            return False, f"원화 잔고가 부족해서 매수하지 않았어 (사용 가능 원화: {fmt_price(krw)})"
 
-        if filled_qty <= 0:
-            return False, f"매수는 시도했지만 체결 확인이 안 됐어 / 응답: {result}"
+        try:
+            result = bithumb.buy_market_order(ticker, qty)
+            print("[BUY RESULT]", result)
+            time.sleep(1.5)
 
-        filled_entry = get_price(ticker)
-        if filled_entry <= 0:
-            filled_entry = entry_price
+            if isinstance(result, dict):
+                status = str(result.get("status", ""))
+                if status and status != "0000":
+                    msg = result.get("message", "알 수 없는 오류")
+                    last_error = f"{msg}"
+                    print("[BUY FAIL STATUS]", status, msg)
 
-        active_positions[ticker] = build_position(signal, filled_entry, filled_qty)
+                    if status == "5600":
+                        continue
+                    return False, f"매수 실패 / 응답: {result}"
 
-        add_log({
-            "time": int(time.time()),
-            "type": "BUY",
-            "ticker": ticker,
-            "strategy": signal["strategy"],
-            "strategy_label": signal["strategy_label"],
-            "entry": filled_entry,
-            "qty": filled_qty,
-            "used_krw": use_krw,
-            "stop_loss_pct": signal["stop_loss_pct"],
-            "take_profit_pct": signal["take_profit_pct"],
-            "time_stop_sec": signal["time_stop_sec"],
-            "edge_score": signal.get("edge_score"),
-            "reason": signal["reason"],
-        })
+            after_balance = get_balance(ticker)
+            filled_qty = round(after_balance - before_balance, 8)
 
-        return True, {"entry": filled_entry, "qty": filled_qty, "used_krw": use_krw}
-    except Exception as e:
-        return False, str(e)
+            if filled_qty <= 0:
+                last_error = f"체결 확인이 안 됐어 / 응답: {result}"
+                continue
+
+            filled_entry = get_price(ticker)
+            if filled_entry <= 0:
+                filled_entry = entry_price
+
+            active_positions[ticker] = build_position(signal, filled_entry, filled_qty)
+
+            add_log({
+                "time": int(time.time()),
+                "type": "BUY",
+                "ticker": ticker,
+                "strategy": signal["strategy"],
+                "strategy_label": signal["strategy_label"],
+                "entry": filled_entry,
+                "qty": filled_qty,
+                "used_krw": use_krw,
+                "stop_loss_pct": signal["stop_loss_pct"],
+                "take_profit_pct": signal["take_profit_pct"],
+                "time_stop_sec": signal["time_stop_sec"],
+                "edge_score": signal.get("edge_score"),
+                "reason": signal["reason"],
+            })
+
+            return True, {
+                "entry": filled_entry,
+                "qty": filled_qty,
+                "used_krw": use_krw,
+            }
+
+        except Exception as e:
+            last_error = str(e)
+            print("[BUY EXCEPTION]", e)
+
+    return False, f"매수는 시도했지만 주문 금액이 빡빡해서 실패했어 / 마지막 사유: {last_error}"
 
 # =========================
 # 시그널 점수
