@@ -34,23 +34,22 @@ SCAN_INTERVAL = 60
 POSITION_CHECK_INTERVAL = 10
 LOOP_SLEEP = 1
 
-TOP_TICKERS = 80
+TOP_TICKERS = 100
 BUTTON_EXPIRE = 600
-SAME_STATUS_COOLDOWN = 1200
-MIN_REALERT_PRICE_CHANGE = 0.35
+SAME_STATUS_COOLDOWN = 900
+MIN_REALERT_PRICE_CHANGE = 0.25
 
 FIXED_ENTRY_KRW = 11000
 MIN_ORDER = 5000
 
 AUTO_BUY = True
 AUTO_BUY_START_HOUR = 9
-AUTO_BUY_END_HOUR = 18
+AUTO_BUY_END_HOUR = 23
 
 # =========================
 # BTC 흐름 리포트
 # =========================
-BTC_REPORT_INTERVAL = 3600  # 1시간
-BTC_REPORT_CANDLE = "minute60"
+BTC_REPORT_INTERVAL = 3600
 last_btc_report_time = 0
 
 # =========================
@@ -59,50 +58,53 @@ last_btc_report_time = 0
 BTC_MARKET_FILTER = True
 BTC_CRASH_LOCK_MINUTES = 20
 BTC_CRASH_THRESHOLD = -2.0
+BTC_AUTO_BUY_BLOCK_DROP_PCT = -1.2
 btc_lock_until = 0
 
 # =========================
 # 진입 기준
 # =========================
-ENTRY_NEAR_RANGE = 0.8
-ENTRY_OK_MAX_GAP = 0.8
-ENTRY_LATE_MAX_GAP = 1.5
+ENTRY_NEAR_RANGE = 1.0
+ENTRY_OK_MAX_GAP = 1.0
+ENTRY_LATE_MAX_GAP = 1.8
 
-MIN_TP_GAP = 1.5
-MIN_VOL_RATIO = 0.50
-MIN_STRONG_VOL_RATIO = 0.90
-MIN_ENTRY_SCORE = 1
-MIN_RESISTANCE_GAP = 0.8
-MIN_RECENT_MOVE_PCT = 0.6
+MIN_TP_GAP = 1.2
+MIN_VOL_RATIO = 0.45
+MIN_STRONG_VOL_RATIO = 0.80
+MIN_ENTRY_SCORE = 0
+MIN_RESISTANCE_GAP = 0.7
+MIN_RECENT_MOVE_PCT = 0.5
 
 # =========================
 # 강화 필터
 # =========================
-MIN_PRICE_RANGE_PCT = 1.0
-SIDEWAYS_BLOCK_RANGE_PCT = 0.9
-MAX_PUMP_REJECT_PCT = 8.0
-MIN_RECOVERY_RATIO = 0.90
-RECENT_DROP_BLOCK_PCT = -2.5
+MIN_PRICE_RANGE_PCT = 0.9
+SIDEWAYS_BLOCK_RANGE_PCT = 0.8
+MAX_PUMP_REJECT_PCT = 9.0
+MIN_RECOVERY_RATIO = 0.80
+RECENT_DROP_BLOCK_PCT = -3.0
 MA_SLOPE_LOOKBACK = 3
 USE_TREND_CONFIRM = True
-MIN_EXPECTED_MOVE_AFTER_ENTRY = 1.8
+MIN_EXPECTED_MOVE_AFTER_ENTRY = 1.5
 
 # =========================
 # 등급 기준
 # =========================
 S_GRADE_MIN_VOL_RATIO = 1.0
-S_GRADE_MIN_MOVE_PCT = 2.5
+S_GRADE_MIN_MOVE_PCT = 2.0
 S_GRADE_MIN_ENTRY_SCORE = 5
 
 # =========================
 # 포지션 관리
 # =========================
-BREAKEVEN_TRIGGER = 1.5
-BREAKEVEN_MARGIN = 0.2
+BREAKEVEN_TRIGGER = 1.3
+BREAKEVEN_MARGIN = 0.15
 
 USE_TRAILING_TP = True
-TRAILING_ARM_PCT = 3.0
-TRAILING_GIVEBACK_PCT = 1.0
+TRAILING_ARM_PCT = 2.5
+TRAILING_GIVEBACK_PCT = 0.9
+
+EARLY_WARNING_LOSS_PCT = -1.0
 
 # =========================
 # 상태/등급 상수
@@ -273,7 +275,7 @@ def get_price(ticker):
     except Exception:
         return -1
 
-def get_ohlcv(ticker, interval="day"):
+def get_ohlcv(ticker, interval="minute60"):
     try:
         df = pybithumb.get_ohlcv(ticker, interval=interval)
         if df is None:
@@ -387,8 +389,8 @@ def is_ma_slope_positive(df):
 # =========================
 def analyze_btc_flow():
     try:
-        df = get_ohlcv("BTC", interval=BTC_REPORT_CANDLE)
-        if df is None or len(df) < 3:
+        df = get_ohlcv("BTC", interval="minute60")
+        if df is None or len(df) < 20:
             return "📊 BTC 리포트\nBTC 데이터가 부족해서 아직 판단하기 어려워."
 
         current_price = get_price("BTC")
@@ -406,33 +408,29 @@ def analyze_btc_flow():
 
         if change_pct <= -2.0:
             state = "🚨 강한 하락 흐름"
-            explain = "최근 1시간 하락이 큰 편이라 알트도 같이 흔들릴 가능성이 커."
+            explain = "최근 1시간 하락이 커서 알트 전체가 약해질 가능성이 높아."
         elif change_pct <= -1.0:
             state = "⚠️ 약한 하락 흐름"
-            explain = "시장 분위기가 살짝 약해진 상태라 무리한 진입은 조심하는 게 좋아."
+            explain = "시장 분위기가 살짝 약해졌어. 추격 진입은 조심하는 게 좋아."
         elif change_pct >= 2.0:
             state = "🔥 강한 상승 흐름"
-            explain = "최근 1시간 상승이 강해서 시장 분위기는 좋은 편이야."
+            explain = "시장 분위기가 꽤 강한 편이라 알트 반응도 나올 수 있어."
         elif change_pct >= 1.0:
             state = "👍 완만한 상승 흐름"
-            explain = "시장 컨디션이 무난하게 좋은 편이라 알트도 반응 나올 가능성이 있어."
+            explain = "무난하게 좋은 흐름이야. 종목만 잘 고르면 기회가 나올 수 있어."
         else:
             state = "😐 횡보 / 애매한 흐름"
-            explain = "크게 위아래로 방향이 안 나온 상태라 종목 고를 때 더 신중해야 해."
+            explain = "방향이 강하지 않아서 코인별 선별이 더 중요해."
 
-        ma_text = "MA 위" if current_price >= ma5 and current_price >= ma10 else "MA 아래 또는 혼조"
+        ma_text = "단기 MA 위" if current_price >= ma5 and current_price >= ma10 else "단기 MA 아래/혼조"
 
         return f"""
-📊 BTC 시장 상황 (1시간 기준)
+📊 BTC 리포트 (1시간 기준)
 
 💰 현재가: {fmt_price(current_price)}
 📉 1시간 변동률: {change_pct:.2f}%
-📌 현재 해석: {state}
-📎 단기 위치: {ma_text}
-
-👉 왜 이렇게 보냐면
-- 1시간 전 종가 대비 현재가 변화를 봤고
-- 단기 이동평균(5/10) 위인지도 같이 확인했어
+📌 상태: {state}
+📎 현재 위치: {ma_text}
 
 한줄 해석:
 {explain}
@@ -448,15 +446,15 @@ def get_btc_market_state():
 
     if time.time() < btc_lock_until:
         remain = int((btc_lock_until - time.time()) / 60)
-        return False, f"BTC 급락 잠금 중 ({remain}분 남음)"
+        return False, f"BTC 급락 잠금 중 ({remain}분 남음)", -999
 
-    df = get_ohlcv("BTC", interval=BTC_REPORT_CANDLE)
+    df = get_ohlcv("BTC", interval="minute60")
     if df is None or len(df) < 20:
-        return True, "BTC 조회 실패지만 진행"
+        return True, "BTC 조회 실패지만 진행", 0.0
 
     price = get_price("BTC")
     if price <= 0:
-        return True, "BTC 현재가 조회 실패지만 진행"
+        return True, "BTC 현재가 조회 실패지만 진행", 0.0
 
     ma20 = float(df["close"].rolling(20).mean().iloc[-1])
 
@@ -467,12 +465,12 @@ def get_btc_market_state():
 
     if drop_pct <= BTC_CRASH_THRESHOLD:
         btc_lock_until = time.time() + BTC_CRASH_LOCK_MINUTES * 60
-        return False, f"BTC 급락 감지 ({drop_pct:.2f}%), {BTC_CRASH_LOCK_MINUTES}분 잠금"
+        return False, f"BTC 급락 감지 ({drop_pct:.2f}%), {BTC_CRASH_LOCK_MINUTES}분 잠금", drop_pct
 
     if price < ma20 * 0.992:
-        return False, "BTC가 MA20 아래라 시장 분위기가 약함"
+        return False, "BTC가 MA20 아래라 시장 분위기가 약함", drop_pct
 
-    return True, "시장 분위기 무난"
+    return True, "시장 분위기 무난", drop_pct
 
 # =========================
 # 알림 관련
@@ -533,7 +531,7 @@ def should_send_alert(signal, now_ts):
 # 분석
 # =========================
 def analyze_coin(ticker):
-    df = get_ohlcv(ticker)
+    df = get_ohlcv(ticker, interval="minute60")
     if df is None or len(df) < 40:
         return None
 
@@ -602,10 +600,10 @@ def analyze_coin(ticker):
     else:
         warnings.append("- 이동평균 기울기가 아직 약함")
 
-    if 28 <= rsi <= 70:
+    if 26 <= rsi <= 72:
         score += 1
         reasons.append(f"- RSI 무난 ({rsi:.2f})")
-    elif rsi < 28:
+    elif rsi < 26:
         warnings.append(f"- RSI 너무 낮아 약한 흐름일 수 있음 ({rsi:.2f})")
     else:
         warnings.append(f"- RSI 높아 이미 오른 상태일 수 있음 ({rsi:.2f})")
@@ -631,7 +629,7 @@ def analyze_coin(ticker):
         entry_score -= 1
         warnings.append("- 최근 종가 흐름이 계속 밀림")
 
-    if pump >= 4.0:
+    if pump >= 4.5:
         entry_score -= 1
         warnings.append(f"- 최근 이미 오른 편 ({pump:.2f}%)")
     else:
@@ -677,17 +675,17 @@ def analyze_coin(ticker):
 
     if resistance_gap_pct < MIN_RESISTANCE_GAP:
         return None
-    elif resistance_gap_pct < 1.2:
+    elif resistance_gap_pct < 1.0:
         entry_score -= 1
         warnings.append(f"- 위쪽 저항이 가까움 ({resistance_gap_pct:.2f}%)")
     else:
         reasons.append(f"- 위쪽 저항까지 공간 있음 ({resistance_gap_pct:.2f}%)")
 
-    if tp_type == "짧은 목표" and tp_gap_pct < 1.5:
+    if tp_type == "짧은 목표" and tp_gap_pct < 1.2:
         return None
-    elif tp_type == "보통 목표" and tp_gap_pct < 2.0:
+    elif tp_type == "보통 목표" and tp_gap_pct < 1.8:
         return None
-    elif tp_type == "강한 목표" and tp_gap_pct < 3.0:
+    elif tp_type == "강한 목표" and tp_gap_pct < 2.8:
         return None
 
     if current_price >= signal_tp:
@@ -700,7 +698,7 @@ def analyze_coin(ticker):
     risk = signal_entry - signal_stop
     reward = signal_tp - signal_entry
     rr = reward / risk if risk > 0 else 0
-    if rr < 0.40:
+    if rr < 0.35:
         return None
 
     if entry_score < -1:
@@ -746,29 +744,22 @@ def analyze_coin(ticker):
         "ticker": ticker,
         "grade": grade,
         "status": status,
-
         "current_price": r(current_price),
         "support": r(support, 8),
         "resistance": r(resistance, 8),
-
         "signal_entry": r(signal_entry, 8),
         "signal_stop": r(signal_stop, 8),
         "signal_tp": r(signal_tp, 8),
-
         "tp_type": tp_type,
         "qty": qty,
-
         "score": score,
         "entry_score": entry_score,
-
         "entry_gap_pct": r(entry_gap_pct, 2),
         "tp_gap_pct": r(tp_gap_pct, 2),
         "resistance_gap_pct": r(resistance_gap_pct, 2),
-
         "entry_near": entry_near,
         "vol_ratio": r(vol_ratio, 4),
         "recent_move_pct": r(recent_move_pct, 2),
-
         "reason": "\n".join(reasons) if reasons else "- 없음",
         "warning": "\n".join(warnings) if warnings else "- 특별한 경고 없음",
     }
@@ -782,18 +773,16 @@ def build_position_from_signal(signal, filled_entry, filled_qty):
         "grade": signal["grade"],
         "status": signal["status"],
         "tp_type": signal["tp_type"],
-
         "signal_entry": signal["signal_entry"],
         "signal_stop": signal["signal_stop"],
         "signal_tp": signal["signal_tp"],
-
         "filled_entry": filled_entry,
         "qty": filled_qty,
         "peak_price": filled_entry,
-
         "trailing_armed": False,
         "trailing_stop_price": 0.0,
         "breakeven_armed": False,
+        "early_warning_sent": False,
     }
 
 def buy_coin(signal, mode="AUTO"):
@@ -822,7 +811,14 @@ def buy_coin(signal, mode="AUTO"):
             "ticker": ticker,
             "entry": filled_entry,
             "qty": filled_qty,
-            "mode": mode
+            "mode": mode,
+            "grade": signal.get("grade"),
+            "status": signal.get("status"),
+            "tp_type": signal.get("tp_type"),
+            "entry_score": signal.get("entry_score"),
+            "score": signal.get("score"),
+            "reason": signal.get("reason"),
+            "warning": signal.get("warning"),
         })
 
         return True, {
@@ -876,9 +872,12 @@ def try_auto_buy(signal):
     if not is_weekday_auto_time():
         return False, "자동매수 시간대가 아니야"
 
-    market_ok, market_msg = get_btc_market_state()
+    market_ok, market_msg, btc_drop_pct = get_btc_market_state()
     if BTC_MARKET_FILTER and not market_ok:
         return False, f"시장 필터 차단: {market_msg}"
+
+    if btc_drop_pct <= BTC_AUTO_BUY_BLOCK_DROP_PCT:
+        return False, f"BTC 최근 흐름 약세 ({btc_drop_pct:.2f}%), 자동매수 보류"
 
     if signal["status"] != STATUS_BUY_NOW:
         return False, "지금 진입 가능한 상태가 아니야"
@@ -926,7 +925,7 @@ def scan():
     if not tickers:
         return
 
-    market_ok, market_msg = get_btc_market_state()
+    market_ok, market_msg, _ = get_btc_market_state()
 
     current_holding = None
     current_ticker = None
@@ -1156,7 +1155,7 @@ def handle(update: Update, context: CallbackContext):
             send(f"🛡️ 매수 취소: {msg}")
             return
 
-        market_ok, market_msg = get_btc_market_state()
+        market_ok, market_msg, _ = get_btc_market_state()
         if BTC_MARKET_FILTER and not market_ok:
             send(f"🛡️ 매수 취소: 시장 필터 차단 ({market_msg})")
             return
@@ -1198,7 +1197,7 @@ def handle(update: Update, context: CallbackContext):
             send("기존 포지션 잔고가 없어서 갈아타기 취소")
             return
 
-        market_ok, market_msg = get_btc_market_state()
+        market_ok, market_msg, _ = get_btc_market_state()
         if BTC_MARKET_FILTER and not market_ok:
             send(f"🛡️ 갈아타기 취소: 시장 필터 차단 ({market_msg})")
             return
@@ -1294,6 +1293,20 @@ def monitor():
             if price > position.get("peak_price", filled_entry):
                 position["peak_price"] = price
 
+            if pnl <= EARLY_WARNING_LOSS_PCT and not position.get("early_warning_sent", False):
+                send(
+                    f"""
+⚠️ 조기 손실 경고
+
+📊 {ticker}
+💰 현재가: {fmt_price(price)}
+📉 현재 수익률: {fmt_pct(pnl)}
+
+손절 전이지만 흐름이 약해질 수 있어.
+"""
+                )
+                position["early_warning_sent"] = True
+
             if price <= position["signal_stop"]:
                 bithumb.sell_market_order(ticker, balance)
                 add_log({
@@ -1302,7 +1315,10 @@ def monitor():
                     "ticker": ticker,
                     "entry": filled_entry,
                     "exit": price,
-                    "pnl_pct": round(pnl, 2)
+                    "pnl_pct": round(pnl, 2),
+                    "grade": position.get("grade"),
+                    "tp_type": position.get("tp_type"),
+                    "qty": balance
                 })
                 send(
                     f"""
@@ -1330,7 +1346,10 @@ def monitor():
                         "ticker": ticker,
                         "entry": filled_entry,
                         "exit": price,
-                        "pnl_pct": round(pnl, 2)
+                        "pnl_pct": round(pnl, 2),
+                        "grade": position.get("grade"),
+                        "tp_type": position.get("tp_type"),
+                        "qty": balance
                     })
                     send(
                         f"""
@@ -1360,7 +1379,10 @@ def monitor():
                             "ticker": ticker,
                             "entry": filled_entry,
                             "exit": price,
-                            "pnl_pct": round(pnl, 2)
+                            "pnl_pct": round(pnl, 2),
+                            "grade": position.get("grade"),
+                            "tp_type": position.get("tp_type"),
+                            "qty": balance
                         })
                         send(
                             f"""
@@ -1385,7 +1407,10 @@ def monitor():
                     "ticker": ticker,
                     "entry": filled_entry,
                     "exit": price,
-                    "pnl_pct": round(pnl, 2)
+                    "pnl_pct": round(pnl, 2),
+                    "grade": position.get("grade"),
+                    "tp_type": position.get("tp_type"),
+                    "qty": balance
                 })
                 send(
                     f"""
@@ -1420,7 +1445,7 @@ dispatcher.add_handler(CommandHandler("btc", btc_command))
 
 updater.start_polling(drop_pending_updates=True)
 
-print(f"🚀 v4.2 시장흐름포함 시스템 실행 / 기준시간대: {TIMEZONE}")
+print(f"🚀 v5.0 공격형 시스템 실행 / 기준시간대: {TIMEZONE}")
 
 last_scan_time = 0
 last_position_check = 0
