@@ -49,7 +49,7 @@ AUTO_BUY_END_HOUR = 23
 # =========================
 # BTC 흐름 리포트
 # =========================
-BTC_REPORT_INTERVAL = 3600
+BTC_REPORT_INTERVAL = 3600  # 1시간
 last_btc_report_time = 0
 
 # =========================
@@ -62,7 +62,7 @@ BTC_AUTO_BUY_BLOCK_DROP_PCT = -1.2
 btc_lock_until = 0
 
 # =========================
-# 진입 기준
+# 진입 기준 (공격형)
 # =========================
 ENTRY_NEAR_RANGE = 1.0
 ENTRY_OK_MAX_GAP = 1.0
@@ -275,9 +275,13 @@ def get_price(ticker):
     except Exception:
         return -1
 
-def get_ohlcv(ticker, interval="minute60"):
+def get_ohlcv(ticker, interval=None):
     try:
-        df = pybithumb.get_ohlcv(ticker, interval=interval)
+        if interval:
+            df = pybithumb.get_ohlcv(ticker, interval=interval)
+        else:
+            df = pybithumb.get_ohlcv(ticker)
+
         if df is None:
             return None
         return df
@@ -390,7 +394,7 @@ def is_ma_slope_positive(df):
 def analyze_btc_flow():
     try:
         df = get_ohlcv("BTC", interval="minute60")
-        if df is None or len(df) < 20:
+        if df is None or len(df) < 3:
             return "📊 BTC 리포트\nBTC 데이터가 부족해서 아직 판단하기 어려워."
 
         current_price = get_price("BTC")
@@ -531,7 +535,7 @@ def should_send_alert(signal, now_ts):
 # 분석
 # =========================
 def analyze_coin(ticker):
-    df = get_ohlcv(ticker, interval="minute60")
+    df = get_ohlcv(ticker)
     if df is None or len(df) < 40:
         return None
 
