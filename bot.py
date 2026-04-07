@@ -13,7 +13,7 @@ from telegram.ext import Updater, CommandHandler, CallbackContext
 # =========================
 # 버전
 # =========================
-BOT_VERSION = "수익률 우선 풀공격형 v2.5"
+BOT_VERSION = "실전 안정화 v3.1"
 
 # =========================
 # 환경변수
@@ -46,7 +46,7 @@ LOOP_SLEEP = 1
 TOP_TICKERS = 100
 MIN_ORDER_KRW = 5000
 
-# 소액 계좌용 주문
+# 주문 금액
 MAX_ENTRY_KRW = 10000
 KRW_USE_RATIO = 0.88
 ORDER_BUFFER_KRW = 500
@@ -85,7 +85,7 @@ MIN_EXPECTED_EDGE_SCORE = 5.8
 MIN_EXPECTED_TP_PCT = 2.2
 
 # =========================
-# 초기 상승형 (강화 버전)
+# 초기 상승형
 # =========================
 EARLY_MIN_CHANGE_PCT = 0.8
 EARLY_MAX_CHANGE_PCT = 2.3
@@ -98,33 +98,33 @@ EARLY_AUTO_BUY_MIN_SCORE = 5
 # =========================
 # 상승 시작형
 # =========================
-PREPUMP_MIN_CHANGE_PCT = 0.55
-PREPUMP_MAX_CHANGE_PCT = 4.8
-PREPUMP_MIN_VOL_RATIO = 1.45
-PREPUMP_MIN_RSI = 45
+PREPUMP_MIN_CHANGE_PCT = 0.70
+PREPUMP_MAX_CHANGE_PCT = 4.5
+PREPUMP_MIN_VOL_RATIO = 1.70
+PREPUMP_MIN_RSI = 47
 PREPUMP_MAX_RSI = 72
-PREPUMP_MIN_RANGE_PCT = 0.85
+PREPUMP_MIN_RANGE_PCT = 1.00
 
 # =========================
 # 눌림 반등형
 # =========================
-PULLBACK_MIN_TOTAL_PUMP_PCT = 5.0
-PULLBACK_REBOUND_MIN_PCT = 0.55
-PULLBACK_MIN_VOL_RATIO = 1.05
+PULLBACK_MIN_TOTAL_PUMP_PCT = 5.5
+PULLBACK_REBOUND_MIN_PCT = 0.70
+PULLBACK_MIN_VOL_RATIO = 1.20
 
 # =========================
-# 급등 돌파형 (신규)
+# 급등 돌파형
 # =========================
-BREAKOUT_MIN_CHANGE_PCT = 1.2
-BREAKOUT_MAX_CHANGE_PCT = 6.5
-BREAKOUT_MIN_VOL_RATIO = 2.5
-BREAKOUT_MIN_RSI = 50
-BREAKOUT_MAX_RSI = 78
-BREAKOUT_MIN_RANGE_PCT = 1.2
-BREAKOUT_BREAK_PCT = 0.15  # 직전 고점 대비 최소 돌파폭
+BREAKOUT_MIN_CHANGE_PCT = 1.3
+BREAKOUT_MAX_CHANGE_PCT = 5.5
+BREAKOUT_MIN_VOL_RATIO = 3.0
+BREAKOUT_MIN_RSI = 52
+BREAKOUT_MAX_RSI = 76
+BREAKOUT_MIN_RANGE_PCT = 1.3
+BREAKOUT_BREAK_PCT = 0.20
 
 # =========================
-# 리포트
+# 리포트 간격
 # =========================
 BTC_REPORT_INTERVAL = 3600
 STATUS_REPORT_INTERVAL = 1800
@@ -142,7 +142,7 @@ recent_signal_alerts = {}
 recent_early_alerts = {}
 
 # =========================
-# 공용 유틸
+# 유틸
 # =========================
 def now_kst():
     return datetime.now(ZoneInfo(TIMEZONE))
@@ -206,9 +206,9 @@ def send_startup_message():
 자동매수: {'켜짐' if AUTO_BUY else '꺼짐'}
 운영시간: {AUTO_BUY_START_HOUR}:00 ~ {AUTO_BUY_END_HOUR}:00
 주문 최대금액: {MAX_ENTRY_KRW:,}원
-운영 방식: 수익률 우선 풀공격형
 추가 전략: 급등 돌파형 포함
 포지션 복구: 켜짐
+매도 확인: 켜짐
 
 이 버전으로 시장 감시를 시작할게.
 """
@@ -240,7 +240,7 @@ def add_log(item: dict):
     save_logs()
 
 # =========================
-# 포지션 파일 저장/복구
+# 포지션 파일
 # =========================
 def save_positions():
     try:
@@ -258,10 +258,7 @@ def load_positions():
     try:
         with open(POSITIONS_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-        if isinstance(data, dict):
-            active_positions = data
-        else:
-            active_positions = {}
+        active_positions = data if isinstance(data, dict) else {}
     except Exception as e:
         print(f"[포지션 불러오기 오류] {e}")
         active_positions = {}
@@ -323,14 +320,9 @@ def get_balance(ticker: str) -> float:
 def get_krw_balance():
     try:
         bal = bithumb.get_balance("BTC")
-        print("[KRW BALANCE RAW]", bal)
-
         if not bal or len(bal) < 4:
             return 0.0
-
-        available_krw = float(bal[2] or 0)
-        print("[KRW BALANCE PARSED]", available_krw)
-        return available_krw
+        return float(bal[2] or 0)
     except Exception as e:
         print("[KRW BALANCE ERROR]", e)
         return 0.0
@@ -407,6 +399,19 @@ def upper_wick_too_large(df):
     except Exception:
         return False
 
+def candle_body_ratio(df):
+    try:
+        last = df.iloc[-1]
+        o = float(last["open"])
+        c = float(last["close"])
+        h = float(last["high"])
+        l = float(last["low"])
+        if h <= l:
+            return 0.0
+        return abs(c - o) / (h - l)
+    except Exception:
+        return 0.0
+
 # =========================
 # BTC 필터
 # =========================
@@ -434,10 +439,8 @@ def get_btc_market_state():
 
     if recent_drop_pct <= BTC_STRONG_BLOCK_PCT:
         return False, f"BTC가 크게 빠지는 중이야 ({recent_drop_pct:.2f}%)", recent_drop_pct
-
     if recent_drop_pct <= BTC_CRASH_BLOCK_PCT:
         return False, f"BTC가 약해서 신규 진입을 쉬고 있어 ({recent_drop_pct:.2f}%)", recent_drop_pct
-
     if BTC_MA_FILTER and ma20 > 0 and price < ma20 * 0.992:
         return False, "BTC가 약한 자리라 신규 진입을 쉬고 있어", recent_drop_pct
 
@@ -487,7 +490,7 @@ def analyze_btc_flow():
 """
 
 # =========================
-# 점수/리스크
+# 리스크/점수
 # =========================
 def dynamic_stop_loss_pct(vol_ratio, range_pct, strategy):
     stop = BASE_STOP_LOSS_PCT
@@ -532,7 +535,7 @@ def dynamic_time_stop_sec(vol_ratio, range_pct, strategy):
         base = 720
     elif strategy == "PULLBACK":
         base = 840
-    else:  # BREAKOUT
+    else:
         base = 600
 
     if vol_ratio >= 2.6:
@@ -589,7 +592,6 @@ def analyze_early_entry(ticker: str):
         return None
     if upper_wick_too_large(df):
         return None
-
     if change_pct < 1.0:
         return None
 
@@ -665,7 +667,7 @@ def analyze_prepump_entry(ticker: str):
     if upper_wick_too_large(df):
         return None
 
-    base_score = 5.0 + min(vol_ratio, 4.0) + min(change_pct, 4.0) * 0.7
+    base_score = 5.2 + min(vol_ratio, 4.0) + min(change_pct, 4.0) * 0.75
     stop_loss_pct = dynamic_stop_loss_pct(vol_ratio, range_pct, "PREPUMP")
     take_profit_pct = dynamic_take_profit_pct(vol_ratio, range_pct, "PREPUMP")
     time_stop_sec = dynamic_time_stop_sec(vol_ratio, range_pct, "PREPUMP")
@@ -740,7 +742,7 @@ def analyze_pullback_entry(ticker: str):
         return None
 
     range_pct = get_range_pct(df, 12)
-    base_score = 4.4 + min(vol_ratio, 4.0) + min(rebound_pct, 3.0) * 0.9
+    base_score = 4.8 + min(vol_ratio, 4.0) + min(rebound_pct, 3.0) * 1.0
     stop_loss_pct = dynamic_stop_loss_pct(vol_ratio, range_pct, "PULLBACK")
     take_profit_pct = dynamic_take_profit_pct(vol_ratio, range_pct, "PULLBACK")
     time_stop_sec = dynamic_time_stop_sec(vol_ratio, range_pct, "PULLBACK")
@@ -769,7 +771,7 @@ def analyze_pullback_entry(ticker: str):
     }
 
 # =========================
-# 전략 4: 급등 돌파형 (신규)
+# 전략 4: 급등 돌파형
 # =========================
 def analyze_breakout_entry(ticker: str):
     df = get_ohlcv(ticker, "minute1")
@@ -786,6 +788,7 @@ def analyze_breakout_entry(ticker: str):
     ma5v = ma(df, 5)
     ma10v = ma(df, 10)
     range_pct = get_range_pct(df, 8)
+    body_ratio = candle_body_ratio(df)
 
     if change_pct < BREAKOUT_MIN_CHANGE_PCT or change_pct > BREAKOUT_MAX_CHANGE_PCT:
         return None
@@ -799,6 +802,8 @@ def analyze_breakout_entry(ticker: str):
         return None
     if upper_wick_too_large(df):
         return None
+    if body_ratio < 0.45:
+        return None
 
     recent_high = float(df.tail(8)["high"].iloc[:-1].max())
     if recent_high <= 0:
@@ -808,7 +813,15 @@ def analyze_breakout_entry(ticker: str):
     if break_pct < BREAKOUT_BREAK_PCT:
         return None
 
-    base_score = 5.8 + min(vol_ratio, 5.0) + min(change_pct, 5.0) * 0.8 + min(break_pct, 1.0) * 2.0
+    recent_low = float(df.tail(8)["low"].min())
+    if recent_low <= 0:
+        return None
+
+    compression = ((recent_high - recent_low) / recent_low) * 100
+    if compression > 4.8:
+        return None
+
+    base_score = 6.0 + min(vol_ratio, 5.0) + min(change_pct, 5.0) * 0.9 + min(break_pct, 1.0) * 2.0
     stop_loss_pct = dynamic_stop_loss_pct(vol_ratio, range_pct, "BREAKOUT")
     take_profit_pct = dynamic_take_profit_pct(vol_ratio, range_pct, "BREAKOUT")
     time_stop_sec = dynamic_time_stop_sec(vol_ratio, range_pct, "BREAKOUT")
@@ -859,8 +872,6 @@ def calc_order_qty(ticker: str, entry_price: float, multiplier: float = 1.0):
     safe_price = max(entry_price, best_ask) * MARKET_BUY_SLIPPAGE
     use_krw = get_safe_use_krw(multiplier)
 
-    print("[ORDER CALC]", ticker, "entry=", entry_price, "ask=", best_ask, "safe=", safe_price, "use_krw=", use_krw)
-
     if use_krw < MIN_ORDER_KRW:
         return 0.0, use_krw, safe_price
 
@@ -896,7 +907,7 @@ def buy_market(signal):
     last_error = ""
 
     for multiplier in RETRY_KRW_LEVELS:
-        qty, use_krw, safe_price = calc_order_qty(ticker, entry_price, multiplier)
+        qty, use_krw, _ = calc_order_qty(ticker, entry_price, multiplier)
 
         if qty <= 0:
             krw = get_krw_balance()
@@ -904,7 +915,6 @@ def buy_market(signal):
 
         try:
             result = bithumb.buy_market_order(ticker, qty)
-            print("[BUY RESULT]", result)
             time.sleep(1.5)
 
             if isinstance(result, dict):
@@ -954,9 +964,52 @@ def buy_market(signal):
 
         except Exception as e:
             last_error = str(e)
-            print("[BUY EXCEPTION]", e)
 
     return False, f"매수는 시도했지만 주문 금액이 빡빡해서 실패했어 / 마지막 사유: {last_error}"
+
+# =========================
+# 매도 확인
+# =========================
+def confirm_sell_filled(ticker: str, before_balance: float, retries: int = 5, sleep_sec: float = 1.2):
+    for _ in range(retries):
+        time.sleep(sleep_sec)
+        after_balance = get_balance(ticker)
+        if after_balance < before_balance * 0.2:
+            return True, after_balance
+    return False, get_balance(ticker)
+
+def sell_market_confirmed(ticker: str, reason_type: str, pos: dict, current_price: float, pnl_pct: float, held_sec: int = 0):
+    try:
+        before_balance = get_balance(ticker)
+        if before_balance <= 0:
+            return False, "잔고가 없어서 매도할 수 없었어"
+
+        result = bithumb.sell_market_order(ticker, before_balance)
+        ok, after_balance = confirm_sell_filled(ticker, before_balance)
+
+        if not ok:
+            return False, f"매도 요청은 갔지만 체결 확인이 안 됐어 / 응답: {result}"
+
+        add_log({
+            "time": int(time.time()),
+            "type": reason_type,
+            "ticker": ticker,
+            "strategy": pos["strategy"],
+            "strategy_label": pos["strategy_label"],
+            "entry": float(pos["entry_price"]),
+            "exit": current_price,
+            "pnl_pct": round(pnl_pct, 2),
+            "held_sec": int(held_sec),
+            "edge_score": pos.get("edge_score", 0),
+        })
+
+        active_positions.pop(ticker, None)
+        save_positions()
+        clear_position_file_if_empty()
+
+        return True, "매도 완료"
+    except Exception as e:
+        return False, str(e)
 
 # =========================
 # 포지션 복구
@@ -975,14 +1028,14 @@ def recover_positions_from_exchange():
 
     recovered = 0
 
-    for ticker in tickers[:TOP_TICKERS]:
+    for ticker in tickers:
         try:
             qty = get_balance(ticker)
             price = get_price(ticker)
             if qty <= 0 or price <= 0:
                 continue
 
-            if qty * price < MIN_ORDER_KRW:
+            if qty * price < 100:
                 continue
 
             last_buy = None
@@ -992,7 +1045,8 @@ def recover_positions_from_exchange():
                 if log.get("ticker") != ticker:
                     continue
                 if log.get("type") == "BUY":
-                    last_buy = log
+                    if (last_buy is None) or int(log.get("time", 0)) > int(last_buy.get("time", 0)):
+                        last_buy = log
                 elif log.get("type") in ["TP", "STOP", "TRAIL_TP", "BREAKEVEN", "TIME_STOP"]:
                     last_close_time = max(last_close_time, int(log.get("time", 0)))
 
@@ -1005,6 +1059,7 @@ def recover_positions_from_exchange():
                 time_stop_sec = int(last_buy.get("time_stop_sec", 900))
                 edge_score = float(last_buy.get("edge_score", 0))
                 reason = last_buy.get("reason", "이전 로그 기반 복구")
+                entered_at = int(last_buy.get("time", int(time.time())))
             else:
                 entry_price = price
                 strategy = "RECOVER"
@@ -1014,6 +1069,7 @@ def recover_positions_from_exchange():
                 time_stop_sec = 900
                 edge_score = 0
                 reason = "현재 잔고 기반 복구"
+                entered_at = int(time.time())
 
             active_positions[ticker] = {
                 "ticker": ticker,
@@ -1024,7 +1080,7 @@ def recover_positions_from_exchange():
                 "stop_loss_pct": stop_loss_pct,
                 "take_profit_pct": take_profit_pct,
                 "time_stop_sec": time_stop_sec,
-                "entered_at": time.time(),
+                "entered_at": entered_at,
                 "peak_price": max(entry_price, price),
                 "breakeven_armed": False,
                 "trailing_armed": False,
@@ -1226,8 +1282,6 @@ def scan_and_auto_trade():
 # 포지션 관리
 # =========================
 def monitor_positions():
-    remove_list = []
-
     for ticker, pos in list(active_positions.items()):
         try:
             current_price = get_price(ticker)
@@ -1235,8 +1289,13 @@ def monitor_positions():
                 continue
 
             balance = get_balance(ticker)
-            if balance <= 0 or balance * current_price < MIN_ORDER_KRW:
-                remove_list.append(ticker)
+            market_value = balance * current_price
+
+            # 잔고 0일 때만 제거
+            if balance <= 0:
+                active_positions.pop(ticker, None)
+                save_positions()
+                clear_position_file_if_empty()
                 continue
 
             entry_price = float(pos["entry_price"])
@@ -1244,28 +1303,22 @@ def monitor_positions():
 
             if current_price > pos["peak_price"]:
                 pos["peak_price"] = current_price
+                save_positions()
 
             stop_price = entry_price * (1 + pos["stop_loss_pct"] / 100)
             tp_price = entry_price * (1 + pos["take_profit_pct"] / 100)
-            held_sec = time.time() - pos["entered_at"]
+            held_sec = int(time.time() - int(pos["entered_at"]))
+
+            # 5천원 미만은 유지만 하고 자동매도 안 시도
+            if market_value < MIN_ORDER_KRW:
+                continue
 
             if held_sec >= pos["time_stop_sec"]:
                 if pnl_pct < 1.0:
-                    bithumb.sell_market_order(ticker, balance)
-                    add_log({
-                        "time": int(time.time()),
-                        "type": "TIME_STOP",
-                        "ticker": ticker,
-                        "strategy": pos["strategy"],
-                        "strategy_label": pos["strategy_label"],
-                        "entry": entry_price,
-                        "exit": current_price,
-                        "pnl_pct": round(pnl_pct, 2),
-                        "held_sec": int(held_sec),
-                        "edge_score": pos.get("edge_score", 0),
-                    })
-                    send(
-                        f"""
+                    ok, msg = sell_market_confirmed(ticker, "TIME_STOP", pos, current_price, pnl_pct, held_sec)
+                    if ok:
+                        send(
+                            f"""
 ⏱ 오래 안 가서 정리
 
 📊 {ticker}
@@ -1277,25 +1330,26 @@ def monitor_positions():
 
 오래 들고 있었는데 잘 안 올라서 정리했어.
 """
-                    )
-                    remove_list.append(ticker)
+                        )
+                    else:
+                        send(
+                            f"""
+⚠️ 정리 시도했지만 확인 실패
+
+📊 {ticker}
+방식: {pos['strategy_label']}
+
+사유:
+{msg}
+"""
+                        )
                     continue
 
             if current_price <= stop_price:
-                bithumb.sell_market_order(ticker, balance)
-                add_log({
-                    "time": int(time.time()),
-                    "type": "STOP",
-                    "ticker": ticker,
-                    "strategy": pos["strategy"],
-                    "strategy_label": pos["strategy_label"],
-                    "entry": entry_price,
-                    "exit": current_price,
-                    "pnl_pct": round(pnl_pct, 2),
-                    "edge_score": pos.get("edge_score", 0),
-                })
-                send(
-                    f"""
+                ok, msg = sell_market_confirmed(ticker, "STOP", pos, current_price, pnl_pct, held_sec)
+                if ok:
+                    send(
+                        f"""
 🚨 손절
 
 📊 {ticker}
@@ -1304,30 +1358,33 @@ def monitor_positions():
 💰 현재가: {fmt_price(current_price)}
 📉 손실률: {fmt_pct(pnl_pct)}
 """
-                )
-                remove_list.append(ticker)
+                    )
+                else:
+                    send(
+                        f"""
+⚠️ 손절 시도했지만 확인 실패
+
+📊 {ticker}
+방식: {pos['strategy_label']}
+
+사유:
+{msg}
+"""
+                    )
                 continue
 
             if pnl_pct >= BREAKEVEN_TRIGGER_PCT:
-                pos["breakeven_armed"] = True
+                if not pos.get("breakeven_armed", False):
+                    pos["breakeven_armed"] = True
+                    save_positions()
 
-            if pos["breakeven_armed"]:
+            if pos.get("breakeven_armed", False):
                 be_price = entry_price * (1 + BREAKEVEN_BUFFER_PCT / 100)
                 if current_price <= be_price:
-                    bithumb.sell_market_order(ticker, balance)
-                    add_log({
-                        "time": int(time.time()),
-                        "type": "BREAKEVEN",
-                        "ticker": ticker,
-                        "strategy": pos["strategy"],
-                        "strategy_label": pos["strategy_label"],
-                        "entry": entry_price,
-                        "exit": current_price,
-                        "pnl_pct": round(pnl_pct, 2),
-                        "edge_score": pos.get("edge_score", 0),
-                    })
-                    send(
-                        f"""
+                    ok, msg = sell_market_confirmed(ticker, "BREAKEVEN", pos, current_price, pnl_pct, held_sec)
+                    if ok:
+                        send(
+                            f"""
 🛡️ 손실 없이 정리
 
 📊 {ticker}
@@ -1336,30 +1393,33 @@ def monitor_positions():
 💰 현재가: {fmt_price(current_price)}
 📈 결과: {fmt_pct(pnl_pct)}
 """
-                    )
-                    remove_list.append(ticker)
+                        )
+                    else:
+                        send(
+                            f"""
+⚠️ 본절 정리 시도했지만 확인 실패
+
+📊 {ticker}
+방식: {pos['strategy_label']}
+
+사유:
+{msg}
+"""
+                        )
                     continue
 
             if pnl_pct >= TRAIL_START_PCT:
-                pos["trailing_armed"] = True
+                if not pos.get("trailing_armed", False):
+                    pos["trailing_armed"] = True
+                    save_positions()
 
-            if pos["trailing_armed"]:
+            if pos.get("trailing_armed", False):
                 trail_stop = pos["peak_price"] * (1 - TRAIL_BACKOFF_PCT / 100)
                 if current_price <= trail_stop:
-                    bithumb.sell_market_order(ticker, balance)
-                    add_log({
-                        "time": int(time.time()),
-                        "type": "TRAIL_TP",
-                        "ticker": ticker,
-                        "strategy": pos["strategy"],
-                        "strategy_label": pos["strategy_label"],
-                        "entry": entry_price,
-                        "exit": current_price,
-                        "pnl_pct": round(pnl_pct, 2),
-                        "edge_score": pos.get("edge_score", 0),
-                    })
-                    send(
-                        f"""
+                    ok, msg = sell_market_confirmed(ticker, "TRAIL_TP", pos, current_price, pnl_pct, held_sec)
+                    if ok:
+                        send(
+                            f"""
 📈 오른 뒤 조금 내려와서 익절
 
 📊 {ticker}
@@ -1370,25 +1430,26 @@ def monitor_positions():
 
 잘 가는 종목을 더 길게 먹고 정리했어.
 """
-                    )
-                    remove_list.append(ticker)
+                        )
+                    else:
+                        send(
+                            f"""
+⚠️ 익절 시도했지만 확인 실패
+
+📊 {ticker}
+방식: {pos['strategy_label']}
+
+사유:
+{msg}
+"""
+                        )
                     continue
 
             if current_price >= tp_price:
-                bithumb.sell_market_order(ticker, balance)
-                add_log({
-                    "time": int(time.time()),
-                    "type": "TP",
-                    "ticker": ticker,
-                    "strategy": pos["strategy"],
-                    "strategy_label": pos["strategy_label"],
-                    "entry": entry_price,
-                    "exit": current_price,
-                    "pnl_pct": round(pnl_pct, 2),
-                    "edge_score": pos.get("edge_score", 0),
-                })
-                send(
-                    f"""
+                ok, msg = sell_market_confirmed(ticker, "TP", pos, current_price, pnl_pct, held_sec)
+                if ok:
+                    send(
+                        f"""
 🎉 익절 완료
 
 📊 {ticker}
@@ -1397,20 +1458,24 @@ def monitor_positions():
 💰 현재가: {fmt_price(current_price)}
 📈 수익률: {fmt_pct(pnl_pct)}
 """
-                )
-                remove_list.append(ticker)
+                    )
+                else:
+                    send(
+                        f"""
+⚠️ 익절 시도했지만 확인 실패
+
+📊 {ticker}
+방식: {pos['strategy_label']}
+
+사유:
+{msg}
+"""
+                    )
                 continue
 
         except Exception as e:
             print(f"[포지션 감시 오류] {ticker} / {e}")
             traceback.print_exc()
-
-    for ticker in remove_list:
-        active_positions.pop(ticker, None)
-
-    if remove_list:
-        save_positions()
-        clear_position_file_if_empty()
 
 # =========================
 # 명령어
@@ -1451,11 +1516,13 @@ def status_command(update, context: CallbackContext):
     lines = []
     for ticker, pos in active_positions.items():
         price = get_price(ticker)
-        entry = pos["entry_price"]
+        entry = float(pos["entry_price"])
+        qty = float(pos.get("qty", 0))
         pnl = ((price - entry) / entry) * 100 if entry > 0 and price > 0 else 0
-        held_min = int((time.time() - pos["entered_at"]) / 60)
+        held_min = int((time.time() - int(pos["entered_at"])) / 60)
+        value = qty * price if price > 0 else 0
         lines.append(
-            f"• {ticker} / 방식 {pos['strategy_label']} / 진입 {fmt_price(entry)} / 현재 {fmt_price(price)} / 수익률 {fmt_pct(pnl)} / 보유 {held_min}분 / 수익 기대 점수 {pos.get('edge_score', 0):.2f}"
+            f"• {ticker} / 방식 {pos['strategy_label']} / 진입 {fmt_price(entry)} / 현재 {fmt_price(price)} / 수익률 {fmt_pct(pnl)} / 평가금액 {fmt_price(value)} / 보유 {held_min}분 / 수익 기대 점수 {pos.get('edge_score', 0):.2f}"
         )
 
     send("📌 현재 포지션\n\n" + "\n".join(lines))
