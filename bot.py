@@ -49,8 +49,18 @@ AUTO_BUY_END_HOUR = 23
 # =========================
 # BTC 흐름 리포트
 # =========================
-BTC_REPORT_INTERVAL = 3600  # 1시간
+BTC_REPORT_INTERVAL = 3600
 last_btc_report_time = 0
+
+# =========================
+# 급등 감지 리포트
+# =========================
+PUMP_REPORT_INTERVAL = 600  # 10분
+PUMP_MIN_CHANGE_PCT = 8.0
+PUMP_MIN_VOL_RATIO = 1.8
+PUMP_TOP_N = 3
+last_pump_report_time = 0
+recent_pump_alerts = {}
 
 # =========================
 # 시장 필터
@@ -389,13 +399,38 @@ def is_ma_slope_positive(df):
         return False
 
 # =========================
+# BTC 리포트용 보조
+# =========================
+def get_btc_report_source():
+    candidates = [
+        ("minute60", "1시간"),
+        ("minute30", "30분"),
+        ("minute10", "10분"),
+        (None, "일봉")
+    ]
+
+    for interval, label in candidates:
+        try:
+            if interval is None:
+                df = get_ohlcv("BTC")
+            else:
+                df = get_ohlcv("BTC", interval=interval)
+
+            if df is not None and len(df) >= 3:
+                return df, label
+        except Exception:
+            continue
+
+    return None, None
+
+# =========================
 # BTC 시장 리포트
 # =========================
 def analyze_btc_flow():
     try:
-        df = get_ohlcv("BTC", interval="minute60")
-        if df is None or len(df) < 3:
-            return "📊 BTC 리포트\nBTC 데이터가 부족해서 아직 판단하기 어려워."
+        df, candle_label = get_btc_report_source()
+        if df is None:
+            return "📊 BTC 리포트\nBTC 캔들 데이터를 불러오지 못했어."
 
         current_price = get_price("BTC")
         if current_price <= 0:
@@ -412,16 +447,16 @@ def analyze_btc_flow():
 
         if change_pct <= -2.0:
             state = "🚨 강한 하락 흐름"
-            explain = "최근 1시간 하락이 커서 알트 전체가 약해질 가능성이 높아."
+            explain = "최근 흐름이 꽤 약해서 알트도 같이 흔들릴 가능성이 커."
         elif change_pct <= -1.0:
             state = "⚠️ 약한 하락 흐름"
-            explain = "시장 분위기가 살짝 약해졌어. 추격 진입은 조심하는 게 좋아."
+            explain = "시장 분위기가 살짝 약해졌어. 무리한 진입은 조심하는 게 좋아."
         elif change_pct >= 2.0:
             state = "🔥 강한 상승 흐름"
-            explain = "시장 분위기가 꽤 강한 편이라 알트 반응도 나올 수 있어."
+            explain = "최근 흐름이 강해서 시장 분위기는 좋은 편이야."
         elif change_pct >= 1.0:
             state = "👍 완만한 상승 흐름"
-            explain = "무난하게 좋은 흐름이야. 종목만 잘 고르면 기회가 나올 수 있어."
+            explain = "무난하게 좋은 흐름이라 종목만 잘 고르면 기회가 나올 수 있어."
         else:
             state = "😐 횡보 / 애매한 흐름"
             explain = "방향이 강하지 않아서 코인별 선별이 더 중요해."
@@ -429,10 +464,10 @@ def analyze_btc_flow():
         ma_text = "단기 MA 위" if current_price >= ma5 and current_price >= ma10 else "단기 MA 아래/혼조"
 
         return f"""
-📊 BTC 리포트 (1시간 기준)
+📊 BTC 리포트 ({candle_label} 기준)
 
 💰 현재가: {fmt_price(current_price)}
-📉 1시간 변동률: {change_pct:.2f}%
+📉 변동률: {change_pct:.2f}%
 📌 상태: {state}
 📎 현재 위치: {ma_text}
 
@@ -452,7 +487,7 @@ def get_btc_market_state():
         remain = int((btc_lock_until - time.time()) / 60)
         return False, f"BTC 급락 잠금 중 ({remain}분 남음)", -999
 
-    df = get_ohlcv("BTC", interval="minute60")
+    df, _ = get_btc_report_source()
     if df is None or len(df) < 20:
         return True, "BTC 조회 실패지만 진행", 0.0
 
@@ -475,6 +510,90 @@ def get_btc_market_state():
         return False, "BTC가 MA20 아래라 시장 분위기가 약함", drop_pct
 
     return True, "시장 분위기 무난", drop_pct
+
+# =========================
+# 급등 감지
+# =========================
+def analyze_pump_coin(ticker):
+    try:
+        df = get_ohlcv(ticker)
+        if df is None or len(df) < 15:
+            return None
+
+        current_price = get_price(ticker)
+        if current_price <= 0:
+            return None
+
+        recent = df.tail(10)
+        start_price = float(recent["close"].iloc[0])
+        if start_price <= 0:
+            return None
+
+        change_pct = ((current_price - start_price) / start_price) * 100
+
+        recent_vol = float(recent["volume"].mean())
+        prev_vol = float(df.tail(30).head(20)["volume"].mean()) if len(df) >= 30 else float(df["volume"].mean())
+        vol_ratio = recent_vol / prev_vol if prev_vol > 0 else 0
+
+        if change_pct < PUMP_MIN_CHANGE_PCT:
+            return None
+        if vol_ratio < PUMP_MIN_VOL_RATIO:
+            return None
+
+        return {
+            "ticker": ticker,
+            "current_price": current_price,
+            "change_pct": round(change_pct, 2),
+            "vol_ratio": round(vol_ratio, 2)
+        }
+    except Exception:
+        return None
+
+def scan_pumps():
+    global recent_pump_alerts
+
+    try:
+        tickers = pybithumb.get_tickers()
+    except Exception as e:
+        print(f"[급등 스캔 티커 오류] {e}")
+        return
+
+    if not tickers:
+        return
+
+    results = []
+    for t in tickers[:TOP_TICKERS]:
+        if t == "BTC":
+            continue
+        item = analyze_pump_coin(t)
+        if item:
+            results.append(item)
+
+    if not results:
+        return
+
+    results.sort(key=lambda x: (x["change_pct"], x["vol_ratio"]), reverse=True)
+    top_results = results[:PUMP_TOP_N]
+
+    lines = []
+    now_ts = time.time()
+
+    for item in top_results:
+        ticker = item["ticker"]
+        prev_time = recent_pump_alerts.get(ticker, 0)
+        if now_ts - prev_time < PUMP_REPORT_INTERVAL:
+            continue
+
+        recent_pump_alerts[ticker] = now_ts
+        lines.append(
+            f"• {ticker} / {fmt_price(item['current_price'])} / 상승 {item['change_pct']:.2f}% / 거래량 {item['vol_ratio']:.2f}배"
+        )
+
+    if not lines:
+        return
+
+    msg = "🚀 급등 포착 알림\n\n" + "\n".join(lines) + "\n\n앱처럼 튀는 종목을 참고용으로 보여주는 알림이야."
+    send(msg)
 
 # =========================
 # 알림 관련
@@ -1449,7 +1568,7 @@ dispatcher.add_handler(CommandHandler("btc", btc_command))
 
 updater.start_polling(drop_pending_updates=True)
 
-print(f"🚀 v5.0 공격형 시스템 실행 / 기준시간대: {TIMEZONE}")
+print(f"🚀 v5.1 공격형+급등포착 시스템 실행 / 기준시간대: {TIMEZONE}")
 
 last_scan_time = 0
 last_position_check = 0
@@ -1480,5 +1599,13 @@ while True:
             print(f"[BTC 리포트 오류] {e}")
             traceback.print_exc()
         last_btc_report_time = now_ts
+
+    if now_ts - last_pump_report_time >= PUMP_REPORT_INTERVAL:
+        try:
+            scan_pumps()
+        except Exception as e:
+            print(f"[급등 감지 오류] {e}")
+            traceback.print_exc()
+        last_pump_report_time = now_ts
 
     time.sleep(LOOP_SLEEP)
