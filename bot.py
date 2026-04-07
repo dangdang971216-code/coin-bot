@@ -12,7 +12,7 @@ from telegram.ext import Updater, CommandHandler, CallbackContext
 # =========================
 # 버전
 # =========================
-BOT_VERSION = "수익률 우선 풀공격형 v2.1"
+BOT_VERSION = "수익률 우선 풀공격형 v2.2"
 
 # =========================
 # 환경변수
@@ -44,7 +44,7 @@ MIN_ORDER_KRW = 5000
 # 소액 계좌용 보수적 주문
 MAX_ENTRY_KRW = 10500
 KRW_USE_RATIO = 0.90
-ORDER_BUFFER_KRW = 300  # 수수료/오차/시장가 여유
+ORDER_BUFFER_KRW = 300
 
 AUTO_BUY = True
 AUTO_BUY_START_HOUR = 7
@@ -87,7 +87,7 @@ EARLY_MIN_RANGE_PCT = 0.50
 EARLY_AUTO_BUY_MIN_SCORE = 5
 
 # =========================
-# PREPUMP (급등 직전)
+# PREPUMP (상승 시작)
 # =========================
 PREPUMP_MIN_CHANGE_PCT = 0.55
 PREPUMP_MAX_CHANGE_PCT = 4.8
@@ -97,7 +97,7 @@ PREPUMP_MAX_RSI = 72
 PREPUMP_MIN_RANGE_PCT = 0.85
 
 # =========================
-# PULLBACK (급등 후 눌림)
+# PULLBACK (눌림 반등)
 # =========================
 PULLBACK_MIN_TOTAL_PUMP_PCT = 5.0
 PULLBACK_REBOUND_MIN_PCT = 0.55
@@ -238,27 +238,17 @@ def get_balance(ticker: str) -> float:
 
 def get_krw_balance():
     try:
-        bal = bithumb.get_balance("KRW")
+        # KRW 자체가 아니라 BTC 같은 티커로 조회해야
+        # (보유코인, 주문중코인, 보유원화, 주문중원화) 형태가 안정적으로 오는 경우가 많음
+        bal = bithumb.get_balance("BTC")
         print("[KRW BALANCE RAW]", bal)
 
-        if not bal:
+        if not bal or len(bal) < 4:
             return 0.0
 
-        candidates = []
-        for x in bal:
-            try:
-                v = float(x or 0)
-                if v > 0:
-                    candidates.append(v)
-            except Exception:
-                pass
-
-        if not candidates:
-            return 0.0
-
-        krw = max(candidates)
-        print("[KRW BALANCE PARSED]", krw)
-        return krw
+        available_krw = float(bal[2] or 0)
+        print("[KRW BALANCE PARSED]", available_krw)
+        return available_krw
     except Exception as e:
         print("[KRW BALANCE ERROR]", e)
         return 0.0
@@ -364,7 +354,7 @@ def get_btc_market_state():
         return False, f"BTC가 크게 빠지는 중이야 ({recent_drop_pct:.2f}%)", recent_drop_pct
 
     if recent_drop_pct <= BTC_CRASH_BLOCK_PCT:
-        return False, f"BTC가 약해서 신규 진입을 막고 있어 ({recent_drop_pct:.2f}%)", recent_drop_pct
+        return False, f"BTC가 약해서 신규 진입을 쉬고 있어 ({recent_drop_pct:.2f}%)", recent_drop_pct
 
     if BTC_MA_FILTER and ma20 > 0 and price < ma20 * 0.992:
         return False, "BTC가 약한 자리라 신규 진입을 쉬고 있어", recent_drop_pct
@@ -478,7 +468,7 @@ def expected_edge_score(stop_loss_pct, take_profit_pct, base_score):
     return base_score + (rr * 1.4)
 
 # =========================
-# 전략 0: 관심 후보
+# 전략 0: 봐둘 후보
 # =========================
 def analyze_early_entry(ticker: str):
     df = get_ohlcv(ticker, "minute3")
@@ -616,7 +606,7 @@ def analyze_prepump_entry(ticker: str):
     }
 
 # =========================
-# 전략 2: 눌림 재돌파
+# 전략 2: 눌림 반등형
 # =========================
 def analyze_pullback_entry(ticker: str):
     df = get_ohlcv(ticker, "minute3")
@@ -693,27 +683,24 @@ def analyze_pullback_entry(ticker: str):
 # =========================
 # 주문
 # =========================
+def get_safe_use_krw():
+    krw = get_krw_balance()
+    use_krw = min(krw * KRW_USE_RATIO, MAX_ENTRY_KRW)
+    use_krw = use_krw - ORDER_BUFFER_KRW
+    return max(use_krw, 0)
+
 def calc_order_qty(entry_price: float):
     if entry_price <= 0:
         return 0.0
 
-    krw = get_krw_balance()
-    use_krw = min(krw * KRW_USE_RATIO, MAX_ENTRY_KRW)
-    use_krw = use_krw - ORDER_BUFFER_KRW
-
-    print("[ORDER CALC] krw=", krw, "use_krw=", use_krw, "entry_price=", entry_price)
+    use_krw = get_safe_use_krw()
+    print("[ORDER CALC] use_krw=", use_krw, "entry_price=", entry_price)
 
     if use_krw < MIN_ORDER_KRW:
         return 0.0
 
     qty = use_krw / entry_price
     return round(qty, 8)
-
-def get_safe_use_krw():
-    krw = get_krw_balance()
-    use_krw = min(krw * KRW_USE_RATIO, MAX_ENTRY_KRW)
-    use_krw = use_krw - ORDER_BUFFER_KRW
-    return max(use_krw, 0)
 
 def build_position(signal, filled_entry, filled_qty):
     return {
@@ -825,7 +812,7 @@ def early_stage_text(score):
     return "📝 약한 후보: 아직은 더 지켜봐야 해."
 
 # =========================
-# 초조기 알림
+# 후보 알림
 # =========================
 def scan_early_watchlist():
     global recent_early_alerts
@@ -902,7 +889,6 @@ def scan_and_auto_trade():
         if ticker == "BTC":
             continue
 
-            # NOTE: intentionally using same loop block
         early = analyze_early_entry(ticker)
         if early and should_auto_buy_signal(early):
             candidates.append(early)
