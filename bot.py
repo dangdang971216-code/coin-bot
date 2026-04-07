@@ -12,7 +12,7 @@ from telegram.ext import Updater, CommandHandler, CallbackContext
 # =========================
 # 버전
 # =========================
-BOT_VERSION = "수익률 우선 풀공격형 v2.0"
+BOT_VERSION = "수익률 우선 풀공격형 v2.1"
 
 # =========================
 # 환경변수
@@ -41,9 +41,11 @@ LOOP_SLEEP = 1
 TOP_TICKERS = 100
 MIN_ORDER_KRW = 5000
 
-# 고정 진입금 대신 '최대 사용 가능 금액' 개념으로 사용
-MAX_ENTRY_KRW = 11000
-KRW_USE_RATIO = 0.95  # 잔고의 95%만 사용
+# 소액 계좌용 보수적 주문
+MAX_ENTRY_KRW = 10500
+KRW_USE_RATIO = 0.90
+ORDER_BUFFER_KRW = 300  # 수수료/오차/시장가 여유
+
 AUTO_BUY = True
 AUTO_BUY_START_HOUR = 7
 AUTO_BUY_END_HOUR = 23
@@ -67,11 +69,9 @@ TRAIL_BACKOFF_PCT = 0.95
 BREAKEVEN_TRIGGER_PCT = 1.4
 BREAKEVEN_BUFFER_PCT = 0.20
 
-# 시간손절
 TIME_STOP_MIN_SEC = 300
 TIME_STOP_MAX_SEC = 1500
 
-# 기대값 필터
 MIN_EXPECTED_EDGE_SCORE = 5.8
 MIN_EXPECTED_TP_PCT = 2.2
 
@@ -179,6 +179,7 @@ def send_startup_message():
 버전: {BOT_VERSION}
 자동매수: {'켜짐' if AUTO_BUY else '꺼짐'}
 운영시간: {AUTO_BUY_START_HOUR}:00 ~ {AUTO_BUY_END_HOUR}:00
+주문 최대금액: {MAX_ENTRY_KRW:,}원
 운영 방식: 수익률 우선 풀공격형
 
 이 버전으로 시장 감시를 시작할게.
@@ -238,13 +239,28 @@ def get_balance(ticker: str) -> float:
 def get_krw_balance():
     try:
         bal = bithumb.get_balance("KRW")
+        print("[KRW BALANCE RAW]", bal)
+
         if not bal:
             return 0.0
-        # 보통 사용 가능 KRW가 index 2에 들어오는 경우가 많음
-        if len(bal) >= 3:
-            return float(bal[2] or 0)
-        return 0.0
-    except Exception:
+
+        candidates = []
+        for x in bal:
+            try:
+                v = float(x or 0)
+                if v > 0:
+                    candidates.append(v)
+            except Exception:
+                pass
+
+        if not candidates:
+            return 0.0
+
+        krw = max(candidates)
+        print("[KRW BALANCE PARSED]", krw)
+        return krw
+    except Exception as e:
+        print("[KRW BALANCE ERROR]", e)
         return 0.0
 
 # =========================
@@ -683,12 +699,21 @@ def calc_order_qty(entry_price: float):
 
     krw = get_krw_balance()
     use_krw = min(krw * KRW_USE_RATIO, MAX_ENTRY_KRW)
+    use_krw = use_krw - ORDER_BUFFER_KRW
+
+    print("[ORDER CALC] krw=", krw, "use_krw=", use_krw, "entry_price=", entry_price)
 
     if use_krw < MIN_ORDER_KRW:
         return 0.0
 
     qty = use_krw / entry_price
     return round(qty, 8)
+
+def get_safe_use_krw():
+    krw = get_krw_balance()
+    use_krw = min(krw * KRW_USE_RATIO, MAX_ENTRY_KRW)
+    use_krw = use_krw - ORDER_BUFFER_KRW
+    return max(use_krw, 0)
 
 def build_position(signal, filled_entry, filled_qty):
     return {
@@ -716,9 +741,11 @@ def buy_market(signal):
         return False, "현재가를 불러오지 못했어"
 
     qty = calc_order_qty(entry_price)
+    use_krw = get_safe_use_krw()
+
     if qty <= 0:
         krw = get_krw_balance()
-        return False, f"원화 잔고가 부족해서 매수하지 않았어 (사용 가능 KRW: {fmt_price(krw)})"
+        return False, f"원화 잔고가 부족해서 매수하지 않았어 (사용 가능 원화: {fmt_price(krw)})"
 
     before_balance = get_balance(ticker)
 
@@ -746,6 +773,7 @@ def buy_market(signal):
             "strategy_label": signal["strategy_label"],
             "entry": filled_entry,
             "qty": filled_qty,
+            "used_krw": use_krw,
             "stop_loss_pct": signal["stop_loss_pct"],
             "take_profit_pct": signal["take_profit_pct"],
             "time_stop_sec": signal["time_stop_sec"],
@@ -753,7 +781,7 @@ def buy_market(signal):
             "reason": signal["reason"],
         })
 
-        return True, {"entry": filled_entry, "qty": filled_qty}
+        return True, {"entry": filled_entry, "qty": filled_qty, "used_krw": use_krw}
     except Exception as e:
         return False, str(e)
 
@@ -874,6 +902,7 @@ def scan_and_auto_trade():
         if ticker == "BTC":
             continue
 
+            # NOTE: intentionally using same loop block
         early = analyze_early_entry(ticker)
         if early and should_auto_buy_signal(early):
             candidates.append(early)
@@ -913,8 +942,6 @@ def scan_and_auto_trade():
         )
         return
 
-    used_krw = min(get_krw_balance() * KRW_USE_RATIO, MAX_ENTRY_KRW)
-
     send(
         f"""
 ✅ 자동매수 완료
@@ -924,7 +951,7 @@ def scan_and_auto_trade():
 
 💰 매수가: {fmt_price(result['entry'])}
 📦 수량: {result['qty']:.6f}
-💵 사용한 금액(대략): {fmt_price(used_krw)}
+💵 사용한 금액(대략): {fmt_price(result['used_krw'])}
 
 🛑 손절 기준: {fmt_pct(best['stop_loss_pct'])}
 🎯 목표 수익: {fmt_pct(best['take_profit_pct'])}
