@@ -1059,7 +1059,7 @@ def update_recent_leader_board(cache):
     for rank, (ticker, data) in enumerate(ranked, start=1):
         board[ticker] = {
             "rank": rank,
-            "leader_score": safe_float(data.get("leader_score", 0)),
+            "leader_score": safe_float(data.get('leader_score', 0)),
             "time": now_ts,
         }
     recent_leader_board = board
@@ -1479,7 +1479,7 @@ def analyze_early_entry(ticker: str, data: dict):
         range_pct=range_pct,
         signal_score=base_score_v,
         edge_score=edge_score_v,
-        leader_score=safe_float(data.get("leader_score", 0)) + min(get_pending_seen_count(ticker) * LEADER_REPEAT_SEEN_BONUS, LEADER_MAX_REPEAT_BONUS),
+        leader_score=safe_float(data.get('leader_score', 0)) + min(get_pending_seen_count(ticker) * LEADER_REPEAT_SEEN_BONUS, LEADER_MAX_REPEAT_BONUS),
         stop_loss_pct=stop_loss_pct,
         take_profit_pct=take_profit_pct,
         time_stop_sec=time_stop_sec,
@@ -1495,7 +1495,7 @@ def analyze_early_entry(ticker: str, data: dict):
             f"- 마지막 1봉 상승 {last_jump_pct:.2f}%\n"
             f"- 최근 2봉 상승 {last2_change_pct:.2f}%\n"
             f"- 초입 흐름이 살아있어"
-            f"{pattern_reason_suffix(pattern_info)}\n- 주도주 점수 {safe_float(data.get("leader_score", 0)):.2f}"
+            f"{pattern_reason_suffix(pattern_info)}\n- 주도주 점수 {safe_float(data.get('leader_score', 0)):.2f}"
         ),
     )
 
@@ -1544,7 +1544,7 @@ def analyze_prepump_entry(ticker: str, data: dict):
         range_pct=range_pct,
         signal_score=score_v,
         edge_score=edge_v,
-        leader_score=safe_float(data.get("leader_score", 0)) + min(get_pending_seen_count(ticker) * LEADER_REPEAT_SEEN_BONUS, LEADER_MAX_REPEAT_BONUS),
+        leader_score=safe_float(data.get('leader_score', 0)) + min(get_pending_seen_count(ticker) * LEADER_REPEAT_SEEN_BONUS, LEADER_MAX_REPEAT_BONUS),
         pattern_tags=pattern_info["tags"],
         reference_high=get_recent_high(df, 8, exclude_last=True),
         reference_low=get_recent_low(df, 8, exclude_last=False),
@@ -1592,7 +1592,7 @@ def analyze_pullback_entry(ticker: str, data: dict):
         change_pct=rebound_pct,
         signal_score=score_v,
         edge_score=score_v,
-        leader_score=safe_float(data.get("leader_score", 0)) + min(get_pending_seen_count(ticker) * LEADER_REPEAT_SEEN_BONUS, LEADER_MAX_REPEAT_BONUS),
+        leader_score=safe_float(data.get('leader_score', 0)) + min(get_pending_seen_count(ticker) * LEADER_REPEAT_SEEN_BONUS, LEADER_MAX_REPEAT_BONUS),
         pattern_tags=pattern_info["tags"],
         reason="",
     )
@@ -1684,7 +1684,7 @@ def analyze_trend_cont_entry(ticker: str, data: dict):
         range_pct=get_range_pct(df, 10),
         signal_score=base_score_v,
         edge_score=edge_score_v,
-        leader_score=safe_float(data.get("leader_score", 0)) + min(get_pending_seen_count(ticker) * LEADER_REPEAT_SEEN_BONUS, LEADER_MAX_REPEAT_BONUS),
+        leader_score=safe_float(data.get('leader_score', 0)) + min(get_pending_seen_count(ticker) * LEADER_REPEAT_SEEN_BONUS, LEADER_MAX_REPEAT_BONUS),
         stop_loss_pct=stop_loss_pct,
         take_profit_pct=take_profit_pct,
         time_stop_sec=time_stop_sec,
@@ -1699,7 +1699,7 @@ def analyze_trend_cont_entry(ticker: str, data: dict):
             f"- 직전 고점까지 남은 거리 {retest_gap_pct:.2f}%\n"
             f"- 마지막 1봉 상승 {last1_change_pct:.2f}%\n"
             f"- RSI {rsi:.2f}"
-            f"{pattern_reason_suffix(pattern_info)}\n- 주도주 점수 {safe_float(data.get("leader_score", 0)):.2f}"
+            f"{pattern_reason_suffix(pattern_info)}\n- 주도주 점수 {safe_float(data.get('leader_score', 0)):.2f}"
         ),
     )
 
@@ -1779,7 +1779,7 @@ def analyze_pre_breakout_entry(ticker: str, data: dict):
         range_pct=range_pct,
         signal_score=base_score_v,
         edge_score=edge_score_v,
-        leader_score=safe_float(data.get("leader_score", 0)) + min(get_pending_seen_count(ticker) * LEADER_REPEAT_SEEN_BONUS, LEADER_MAX_REPEAT_BONUS),
+        leader_score=safe_float(data.get('leader_score', 0)) + min(get_pending_seen_count(ticker) * LEADER_REPEAT_SEEN_BONUS, LEADER_MAX_REPEAT_BONUS),
         stop_loss_pct=stop_loss_pct,
         take_profit_pct=take_profit_pct,
         time_stop_sec=time_stop_sec,
@@ -1793,7 +1793,7 @@ def analyze_pre_breakout_entry(ticker: str, data: dict):
             f"- 최근 상승 {change_pct:.2f}%\n"
             f"- 직전 고점까지 남은 거리 {gap_to_break:.2f}%\n"
             f"- RSI {rsi:.2f}"
-            f"{pattern_reason_suffix(pattern_info)}\n- 주도주 점수 {safe_float(data.get("leader_score", 0)):.2f}"
+            f"{pattern_reason_suffix(pattern_info)}\n- 주도주 점수 {safe_float(data.get('leader_score', 0)):.2f}"
         ),
     )
 
@@ -1872,7 +1872,7 @@ def analyze_breakout_entry(ticker: str, data: dict):
         range_pct=range_pct,
         signal_score=base_score_v,
         edge_score=edge_score_v,
-        leader_score=safe_float(data.get("leader_score", 0)) + min(get_pending_seen_count(ticker) * LEADER_REPEAT_SEEN_BONUS, LEADER_MAX_REPEAT_BONUS),
+        leader_score=safe_float(data.get('leader_score', 0)) + min(get_pending_seen_count(ticker) * LEADER_REPEAT_SEEN_BONUS, LEADER_MAX_REPEAT_BONUS),
         stop_loss_pct=stop_loss_pct,
         take_profit_pct=take_profit_pct,
         time_stop_sec=time_stop_sec,
@@ -1886,7 +1886,7 @@ def analyze_breakout_entry(ticker: str, data: dict):
             f"- 최근 상승 {change_pct:.2f}%\n"
             f"- 돌파폭 {break_pct:.2f}%\n"
             f"- RSI {rsi:.2f}"
-            f"{pattern_reason_suffix(pattern_info)}\n- 주도주 점수 {safe_float(data.get("leader_score", 0)):.2f}"
+            f"{pattern_reason_suffix(pattern_info)}\n- 주도주 점수 {safe_float(data.get('leader_score', 0)):.2f}"
         ),
     )
 
@@ -1956,7 +1956,7 @@ def analyze_chase_entry(ticker: str, data: dict):
         range_pct=range_pct,
         signal_score=base_score_v,
         edge_score=edge_score_v,
-        leader_score=safe_float(data.get("leader_score", 0)) + min(get_pending_seen_count(ticker) * LEADER_REPEAT_SEEN_BONUS, LEADER_MAX_REPEAT_BONUS),
+        leader_score=safe_float(data.get('leader_score', 0)) + min(get_pending_seen_count(ticker) * LEADER_REPEAT_SEEN_BONUS, LEADER_MAX_REPEAT_BONUS),
         stop_loss_pct=stop_loss_pct,
         take_profit_pct=take_profit_pct,
         time_stop_sec=time_stop_sec,
@@ -1969,7 +1969,7 @@ def analyze_chase_entry(ticker: str, data: dict):
             f"- 거래량 {vol_ratio:.2f}배\n"
             f"- 최근 상승 {change_pct:.2f}%\n"
             f"- RSI {rsi:.2f}"
-            f"{pattern_reason_suffix(pattern_info)}\n- 주도주 점수 {safe_float(data.get("leader_score", 0)):.2f}"
+            f"{pattern_reason_suffix(pattern_info)}\n- 주도주 점수 {safe_float(data.get('leader_score', 0)):.2f}"
         ),
     )
 
