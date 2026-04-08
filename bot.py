@@ -13,7 +13,7 @@ from telegram.ext import Updater, CommandHandler, CallbackContext
 # =========================
 # 버전
 # =========================
-BOT_VERSION = "수익형 v6.5.1"
+BOT_VERSION = "수익형 v6.5.2"
 
 # =========================
 # 환경변수
@@ -210,6 +210,14 @@ PROMOTE_MIN_VOL_RATIO = 1.2
 PROMOTE_MAX_BREAKOUT_EXTENSION_PCT = 0.45
 
 # =========================
+# watch 재알림 제어
+# =========================
+WATCH_RENOTICE_SEC = 600
+WATCH_VOL_IMPROVE_DELTA = 0.8
+WATCH_CHANGE_IMPROVE_DELTA = 0.7
+WATCH_SCORE_IMPROVE_DELTA = 1.2
+
+# =========================
 # 리포트 간격
 # =========================
 BTC_REPORT_INTERVAL = 3600
@@ -226,6 +234,7 @@ last_watch_report_time = 0
 active_positions = {}
 recent_signal_alerts = {}
 recent_watch_alerts = {}
+recent_watch_snapshots = {}
 pending_sells = {}
 pending_buy_candidates = {}
 
@@ -310,12 +319,14 @@ def send_startup_message():
 - 상승 시작형
 - 눌림 반등형
 
-v6.5.1 핵심:
+v6.5.2 핵심:
 - 쉬는 장 필터 강화
 - 늦은 진입 방지
 - 시나리오 실패 빠른 정리
 - 차트 구조 5개 반영
 - 후보알림 → 2차확인 → 자동매수 승격
+- 후보 반복 알림 감소
+- 좋아졌을 때만 강화 알림
 - 보유중/대기중 코인 후보알림 중복 제거
 - TIME_STOP 문구 자연화
 - 공유 캐시
@@ -2052,7 +2063,7 @@ def process_pending_buy_promotions(shared_cache=None):
         if not current_signal:
             continue
 
-        ok, reason = candidate_promote_ok(item, current_signal, regime)
+        ok, _ = candidate_promote_ok(item, current_signal, regime)
         if not ok:
             continue
 
@@ -2240,7 +2251,7 @@ def recover_positions_from_exchange():
         send(f"♻️ 포지션 복구 완료\n최근 BUY 로그 기준으로 복구된 코인 수: {recovered}")
 
 # =========================
-# 시그널 평가
+# 시그널 평가 / watch 알림 판단
 # =========================
 def signal_score(signal):
     return float(signal.get("edge_score", signal.get("signal_score", 0)))
@@ -2287,6 +2298,84 @@ def is_ticker_blocked_for_watch_alert(ticker: str) -> bool:
         or ticker in pending_buy_candidates
         or ticker in pending_sells
     )
+
+def get_strategy_rank(strategy: str) -> int:
+    rank_map = {
+        "PREPUMP": 1,
+        "PULLBACK": 2,
+        "EARLY": 3,
+        "PRE_BREAKOUT": 4,
+        "BREAKOUT": 5,
+        "CHASE": 6,
+    }
+    return rank_map.get(strategy, 0)
+
+def build_watch_snapshot(item: dict):
+    return {
+        "strategy": item.get("strategy", ""),
+        "strategy_label": item.get("strategy_label", ""),
+        "change_pct": safe_float(item.get("change_pct", 0)),
+        "vol_ratio": safe_float(item.get("vol_ratio", 0)),
+        "signal_score": safe_float(item.get("signal_score", 0)),
+        "pattern_tags": list(item.get("pattern_tags", [])),
+        "price": safe_float(item.get("current_price", 0)),
+    }
+
+def compare_watch_improvement(prev_snap: dict, item: dict):
+    reasons = []
+
+    prev_vol = safe_float(prev_snap.get("vol_ratio", 0))
+    new_vol = safe_float(item.get("vol_ratio", 0))
+    if new_vol - prev_vol >= WATCH_VOL_IMPROVE_DELTA:
+        reasons.append(f"거래량 증가 ({prev_vol:.2f}배 → {new_vol:.2f}배)")
+
+    prev_change = safe_float(prev_snap.get("change_pct", 0))
+    new_change = safe_float(item.get("change_pct", 0))
+    if new_change - prev_change >= WATCH_CHANGE_IMPROVE_DELTA:
+        reasons.append(f"상승률 강화 ({prev_change:.2f}% → {new_change:.2f}%)")
+
+    prev_score = safe_float(prev_snap.get("signal_score", 0))
+    new_score = safe_float(item.get("signal_score", 0))
+    if new_score - prev_score >= WATCH_SCORE_IMPROVE_DELTA:
+        reasons.append(f"점수 상승 ({prev_score:.2f} → {new_score:.2f})")
+
+    prev_strategy = prev_snap.get("strategy", "")
+    new_strategy = item.get("strategy", "")
+    if get_strategy_rank(new_strategy) > get_strategy_rank(prev_strategy):
+        reasons.append(
+            f"전략 승격 ({prev_snap.get('strategy_label', prev_strategy)} → {item.get('strategy_label', new_strategy)})"
+        )
+
+    prev_tags = set(prev_snap.get("pattern_tags", []))
+    new_tags = set(item.get("pattern_tags", []))
+    added_tags = [x for x in item.get("pattern_tags", []) if x in (new_tags - prev_tags)]
+    if added_tags:
+        reasons.append("차트 구조 추가 (" + ", ".join(added_tags) + ")")
+
+    return reasons
+
+def should_send_watch_alert(ticker: str, item: dict, now_ts: float):
+    if is_ticker_blocked_for_watch_alert(ticker):
+        return False, "", ""
+
+    prev_time = recent_watch_alerts.get(ticker, 0)
+    prev_snap = recent_watch_snapshots.get(ticker)
+
+    if not prev_snap or prev_time <= 0:
+        return True, "new", ""
+
+    reasons = compare_watch_improvement(prev_snap, item)
+    if reasons:
+        return True, "upgrade", " / ".join(reasons)
+
+    if now_ts - prev_time >= WATCH_RENOTICE_SEC:
+        return True, "renotice", "시간이 지나 다시 확인 알림"
+
+    return False, "", ""
+
+def save_watch_snapshot(ticker: str, item: dict, now_ts: float):
+    recent_watch_alerts[ticker] = now_ts
+    recent_watch_snapshots[ticker] = build_watch_snapshot(item)
 
 # =========================
 # 후보 추출
@@ -2358,33 +2447,46 @@ def scan_watchlist(shared_cache=None):
     unique_results.sort(key=lambda x: float(x.get("signal_score", 0)), reverse=True)
     top = unique_results[:5]
 
-    lines = []
+    new_lines = []
+    upgrade_lines = []
+    renotice_lines = []
+
     now_ts = time.time()
 
     for item in top:
         ticker = item["ticker"]
 
-        if is_ticker_blocked_for_watch_alert(ticker):
+        send_ok, alert_type, reason_text = should_send_watch_alert(ticker, item, now_ts)
+        if not send_ok:
             continue
-
-        prev = recent_watch_alerts.get(ticker, 0)
-        if now_ts - prev < WATCH_REPORT_INTERVAL:
-            continue
-        recent_watch_alerts[ticker] = now_ts
 
         tag_text = ""
         tags = item.get("pattern_tags", [])
         if tags:
             tag_text = f" / 구조 {','.join(tags[:3])}"
 
-        lines.append(
-            f"• {ticker} / {fmt_price(item['current_price'])} / 상승 {float(item.get('change_pct', 0)):.2f}% / 거래량 {float(item.get('vol_ratio', 0)):.2f}배 / 방식 {item['strategy_label']}{tag_text}"
+        base_line = (
+            f"• {ticker} / {fmt_price(item['current_price'])} / 상승 {float(item.get('change_pct', 0)):.2f}% "
+            f"/ 거래량 {float(item.get('vol_ratio', 0)):.2f}배 / 방식 {item['strategy_label']}{tag_text}"
         )
 
-    if not lines:
-        return
+        if alert_type == "upgrade":
+            upgrade_lines.append(base_line + f"\n  ↳ 강화 이유: {reason_text}")
+        elif alert_type == "renotice":
+            renotice_lines.append(base_line + f"\n  ↳ 재확인: {reason_text}")
+        else:
+            new_lines.append(base_line)
 
-    send("👀 빠른 후보 알림\n\n" + "\n\n".join(lines))
+        save_watch_snapshot(ticker, item, now_ts)
+
+    if new_lines:
+        send("👀 빠른 후보 알림\n\n" + "\n\n".join(new_lines))
+
+    if upgrade_lines:
+        send("🔁 후보 강화 알림\n\n" + "\n\n".join(upgrade_lines))
+
+    if renotice_lines:
+        send("🕒 후보 재확인 알림\n\n" + "\n\n".join(renotice_lines))
 
 # =========================
 # 자동 진입
