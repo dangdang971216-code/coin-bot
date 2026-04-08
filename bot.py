@@ -13,7 +13,7 @@ from telegram.ext import Updater, CommandHandler, CallbackContext
 # =========================================================
 # 버전
 # =========================================================
-BOT_VERSION = "수익형 v6.5.3"
+BOT_VERSION = "수익형 v6.5.4"
 
 # =========================================================
 # 환경변수
@@ -190,6 +190,28 @@ SCENARIO_FAIL_DROP_FROM_ENTRY_PCT = -0.45
 SCENARIO_WEAK_VOL_RATIO_THRESHOLD = 1.15
 
 # =========================================================
+# v6.5.4 제외 규칙 / 사후검증 / 쉬는 기능
+# =========================================================
+ENTRY_SHAPE_FILTER_ON = True
+OVERHEAT_3BAR_MAX_PCT = 2.2
+OVERHEAT_5BAR_MAX_PCT = 3.2
+WEAK_CLOSE_BODY_RATIO_MIN = 0.42
+WEAK_CLOSE_UPPER_WICK_RATIO = 0.52
+
+POST_ENTRY_RECHECK_ON = True
+POST_ENTRY_MIN_CHECK_SEC = 120
+POST_ENTRY_MAX_CHECK_SEC = 240
+POST_ENTRY_MIN_PROGRESS_PCT = 0.12
+POST_ENTRY_MIN_VOL_RATIO = 0.95
+POST_ENTRY_FAIL_BELOW_ENTRY_PCT = -0.35
+
+AUTO_PAUSE_ON = True
+AUTO_PAUSE_STREAK_COUNT = 3
+AUTO_PAUSE_SECONDS = 1200
+AUTO_PAUSE_LOOKBACK_SEC = 3600
+AUTO_PAUSE_ROLLING_PNL = -1.8
+
+# =========================================================
 # 차트 구조 패턴
 # =========================================================
 PATTERN_FILTER_ON = True
@@ -239,6 +261,9 @@ recent_watch_alerts = {}
 recent_watch_snapshots = {}
 pending_sells = {}
 pending_buy_candidates = {}
+
+paused_until = 0
+pause_reason = ""
 
 # =========================================================
 # 공유 캐시
@@ -335,6 +360,9 @@ v6.5.3 핵심:
 - 늦은 진입 방지 유지
 - TIME_STOP 문구 자연화
 - 공유 캐시
+- 진입 후 힘 확인 강화
+- 연속 실패 시 자동 쉬기
+- 원인 통계 보강
 - 매도 exit 보정
 
 명령어:
@@ -1031,6 +1059,118 @@ def strong_momentum_filter(df, change_pct, vol_ratio):
     return True
 
 
+
+def get_upper_wick_ratio(df):
+    try:
+        last = df.iloc[-1]
+        body_top = max(float(last["open"]), float(last["close"]))
+        high = float(last["high"])
+        low = float(last["low"])
+        if high <= low:
+            return 0.0
+        return (high - body_top) / (high - low)
+    except Exception:
+        return 0.0
+
+
+def is_recent_overheated(df):
+    try:
+        change3 = get_recent_change_pct(df, 3)
+        change5 = get_recent_change_pct(df, 5)
+        return change3 >= OVERHEAT_3BAR_MAX_PCT or change5 >= OVERHEAT_5BAR_MAX_PCT
+    except Exception:
+        return False
+
+
+def is_weak_close_candle(df):
+    try:
+        last = df.iloc[-1]
+        o = float(last["open"])
+        c = float(last["close"])
+        h = float(last["high"])
+        if c < o:
+            return True
+        body_ratio = candle_body_ratio(df)
+        upper_wick_ratio = get_upper_wick_ratio(df)
+        return body_ratio < WEAK_CLOSE_BODY_RATIO_MIN and upper_wick_ratio >= WEAK_CLOSE_UPPER_WICK_RATIO
+    except Exception:
+        return False
+
+
+def entry_shape_block(strategy, df):
+    if not ENTRY_SHAPE_FILTER_ON:
+        return False, ""
+    if df is None or len(df) < 8:
+        return False, ""
+    if strategy in ["EARLY", "PRE_BREAKOUT", "BREAKOUT", "PREPUMP"]:
+        if is_recent_overheated(df):
+            return True, "최근 봉이 너무 과열"
+        if is_weak_close_candle(df):
+            return True, "봉 마감 힘이 약해"
+    return False, ""
+
+
+def get_recent_closed_logs_window(sec=AUTO_PAUSE_LOOKBACK_SEC):
+    now_ts = int(time.time())
+    return [
+        x for x in trade_logs
+        if x.get("type") in CLOSE_TYPES and now_ts - int(x.get("time", 0)) <= sec
+    ]
+
+
+def get_recent_loss_streak():
+    streak = 0
+    for x in reversed(trade_logs):
+        if x.get("type") not in CLOSE_TYPES:
+            continue
+        if float(x.get("pnl_pct", 0)) <= 0:
+            streak += 1
+        else:
+            break
+        if streak >= AUTO_PAUSE_STREAK_COUNT:
+            break
+    return streak
+
+
+def activate_auto_pause(reason):
+    global paused_until, pause_reason
+    paused_until = int(time.time()) + AUTO_PAUSE_SECONDS
+    pause_reason = reason
+
+
+def clear_auto_pause_if_needed():
+    global paused_until, pause_reason
+    if paused_until and time.time() >= paused_until:
+        paused_until = 0
+        pause_reason = ""
+
+
+def should_pause_auto_buy_now():
+    clear_auto_pause_if_needed()
+
+    if not AUTO_PAUSE_ON:
+        return False, ""
+
+    if paused_until and time.time() < paused_until:
+        remain = int(paused_until - time.time())
+        return True, f"{max(remain, 0)}초 남음 / {pause_reason}"
+
+    streak = get_recent_loss_streak()
+    if streak >= AUTO_PAUSE_STREAK_COUNT:
+        reason = f"최근 연속 손실 {streak}회"
+        activate_auto_pause(reason)
+        return True, f"{AUTO_PAUSE_SECONDS}초 쉬기 / {reason}"
+
+    recent_logs = get_recent_closed_logs_window(AUTO_PAUSE_LOOKBACK_SEC)
+    if len(recent_logs) >= 3:
+        rolling_pnl = sum(float(x.get("pnl_pct", 0)) for x in recent_logs)
+        if rolling_pnl <= AUTO_PAUSE_ROLLING_PNL:
+            reason = f"최근 1시간 누적 {rolling_pnl:.2f}%"
+            activate_auto_pause(reason)
+            return True, f"{AUTO_PAUSE_SECONDS}초 쉬기 / {reason}"
+
+    return False, ""
+
 def late_entry_block(strategy, df, current_price):
     if not LATE_ENTRY_FILTER_ON:
         return False, ""
@@ -1116,6 +1256,10 @@ def analyze_early_entry(ticker: str, data: dict):
     if not short_trend_up(df):
         return None
 
+    shape_block, _ = entry_shape_block("EARLY", df)
+    if shape_block:
+        return None
+
     block, _ = late_entry_block("EARLY", df, current_price)
     if block:
         return None
@@ -1189,6 +1333,10 @@ def analyze_prepump_entry(ticker: str, data: dict):
     if ma5v <= 0 or ma10v <= 0 or ma5v < ma10v:
         return None
     if upper_wick_too_large(df):
+        return None
+
+    shape_block, _ = entry_shape_block("PREPUMP", df)
+    if shape_block:
         return None
 
     score_v = 5.1 + min(vol_ratio, 4.0) * 0.8 + min(data.get("surge_score", 0), 8) * 0.14 + pattern_info.get("bonus_score", 0)
@@ -1287,6 +1435,10 @@ def analyze_pre_breakout_entry(ticker: str, data: dict):
     if upper_wick_too_large(df):
         return None
     if body_ratio < 0.40:
+        return None
+
+    shape_block, _ = entry_shape_block("PRE_BREAKOUT", df)
+    if shape_block:
         return None
 
     block, _ = late_entry_block("PRE_BREAKOUT", df, current_price)
@@ -1390,6 +1542,10 @@ def analyze_breakout_entry(ticker: str, data: dict):
         return None
     break_pct = ((current_price - recent_high) / recent_high) * 100
     if break_pct < BREAKOUT_CFG["break_min"]:
+        return None
+
+    shape_block, _ = entry_shape_block("BREAKOUT", df)
+    if shape_block:
         return None
 
     block, _ = late_entry_block("BREAKOUT", df, current_price)
@@ -1537,6 +1693,7 @@ def calc_order_qty(ticker: str, entry_price: float, multiplier: float = 1.0):
 
 
 def build_position(signal, filled_entry, filled_qty, used_krw):
+    regime = get_market_regime()
     return {
         "ticker": signal["ticker"],
         "strategy": signal["strategy"],
@@ -1557,6 +1714,10 @@ def build_position(signal, filled_entry, filled_qty, used_krw):
         "invalid_break_level": safe_float(signal.get("invalid_break_level", 0)),
         "entry_strategy_snapshot": signal["strategy"],
         "pattern_tags": signal.get("pattern_tags", []),
+        "entry_regime": regime.get("name", "UNKNOWN"),
+        "from_pending_buy": bool(signal.get("from_pending_buy", False)),
+        "max_profit_pct": 0.0,
+        "max_drawdown_pct": 0.0,
     }
 
 
@@ -1619,6 +1780,8 @@ def buy_market(signal):
                 "managed_by_bot": True,
                 "invalid_break_level": signal.get("invalid_break_level", 0),
                 "pattern_tags": signal.get("pattern_tags", []),
+                "entry_regime": get_market_regime().get("name", "UNKNOWN"),
+                "from_pending_buy": bool(signal.get("from_pending_buy", False)),
             })
 
             return True, {"entry": filled_entry, "qty": filled_qty, "used_krw": krw_used_real}
@@ -1875,6 +2038,10 @@ def process_pending_buy_promotions(shared_cache=None):
     if not PENDING_BUY_ON or not AUTO_BUY or not is_auto_time() or len(active_positions) >= MAX_HOLDINGS:
         return
 
+    paused, _ = should_pause_auto_buy_now()
+    if paused:
+        return
+
     cleanup_pending_buy_candidates()
     if not pending_buy_candidates:
         return
@@ -1915,6 +2082,7 @@ def process_pending_buy_promotions(shared_cache=None):
         if not ok:
             continue
 
+        current_signal["from_pending_buy"] = True
         success, result = buy_market(current_signal)
         if success:
             recent_signal_alerts[ticker] = time.time()
@@ -2132,6 +2300,11 @@ def scan_and_auto_trade(shared_cache=None):
         print(f"[쉬는 장] {regime['message']}")
         return
 
+    paused, pause_msg = should_pause_auto_buy_now()
+    if paused:
+        print(f"[자동 쉬기] {pause_msg}")
+        return
+
     cache = shared_cache or build_shared_market_cache()
     if not cache:
         return
@@ -2217,6 +2390,11 @@ def sell_market_confirmed(ticker: str, reason_type: str, pos: dict, current_pric
             "pnl_pct": round(pnl_pct_real, 2),
             "held_sec": int(held_sec),
             "edge_score": pos.get("edge_score", 0),
+            "max_profit_pct": pos.get("max_profit_pct", 0),
+            "max_drawdown_pct": pos.get("max_drawdown_pct", 0),
+            "entry_regime": pos.get("entry_regime", "UNKNOWN"),
+            "from_pending_buy": pos.get("from_pending_buy", False),
+            "pattern_tags": pos.get("pattern_tags", []),
         })
 
         active_positions.pop(ticker, None)
@@ -2308,6 +2486,53 @@ def recover_positions_from_exchange():
         send(f"♻️ 포지션 복구 완료\n최근 BUY 로그 기준으로 복구된 코인 수: {recovered}")
 
 
+
+def update_position_run_stats(pos, pnl_pct):
+    changed = False
+    if pnl_pct > safe_float(pos.get("max_profit_pct", 0)):
+        pos["max_profit_pct"] = round(float(pnl_pct), 2)
+        changed = True
+    if pnl_pct < safe_float(pos.get("max_drawdown_pct", 0)):
+        pos["max_drawdown_pct"] = round(float(pnl_pct), 2)
+        changed = True
+    return changed
+
+
+def post_entry_strength_fail(ticker, pos, current_price):
+    if not POST_ENTRY_RECHECK_ON:
+        return False, ""
+    held_sec = int(time.time() - int(pos["entered_at"]))
+    if held_sec < POST_ENTRY_MIN_CHECK_SEC or held_sec > POST_ENTRY_MAX_CHECK_SEC:
+        return False, ""
+
+    entry_price = float(pos["entry_price"])
+    if entry_price <= 0:
+        return False, ""
+    pnl_pct = ((current_price - entry_price) / entry_price) * 100
+
+    ticker_cache = shared_market_cache.get(ticker)
+    if not ticker_cache:
+        return False, ""
+    df = ticker_cache.get("df_1m")
+    if df is None or len(df) < 12:
+        return False, ""
+
+    vol_ratio_now = get_vol_ratio(df, 2, 8)
+    invalid_break_level = safe_float(pos.get("invalid_break_level", 0))
+    strategy = pos.get("strategy", "")
+
+    if strategy in ["EARLY", "PRE_BREAKOUT"] and pnl_pct < POST_ENTRY_MIN_PROGRESS_PCT:
+        if vol_ratio_now < POST_ENTRY_MIN_VOL_RATIO:
+            return True, "초반 기대보다 거래량이 빨리 약해졌어"
+        if pnl_pct <= POST_ENTRY_FAIL_BELOW_ENTRY_PCT:
+            return True, "진입 후 바로 힘이 약해서 초반 시나리오가 깨졌어"
+
+    if strategy == "BREAKOUT" and invalid_break_level > 0:
+        if current_price < invalid_break_level and pnl_pct < POST_ENTRY_MIN_PROGRESS_PCT:
+            return True, "돌파 후 기준선 위에 못 안착했어"
+
+    return False, ""
+
 def should_scenario_fail_exit(ticker, pos, current_price):
     if not SCENARIO_EXIT_ON:
         return False, ""
@@ -2344,6 +2569,9 @@ def should_scenario_fail_exit(ticker, pos, current_price):
     if strategy == "CHASE" and pnl_pct <= -0.35:
         return True, "추격 진입 후 바로 탄력이 약했어"
 
+    if strategy == "PRE_BREAKOUT" and pnl_pct <= -0.28 and vol_ratio_now < 1.0:
+        return True, "직전형 기대였는데 눌린 뒤 힘이 약했어"
+
     return False, ""
 
 
@@ -2376,8 +2604,11 @@ def monitor_positions():
             entry_price = float(pos["entry_price"])
             pnl_pct = ((current_price - entry_price) / entry_price) * 100 if entry_price > 0 else 0.0
 
+            changed_stats = update_position_run_stats(pos, pnl_pct)
             if current_price > pos["peak_price"]:
                 pos["peak_price"] = current_price
+                changed_stats = True
+            if changed_stats:
                 save_positions()
 
             stop_price = entry_price * (1 + pos["stop_loss_pct"] / 100)
@@ -2385,6 +2616,15 @@ def monitor_positions():
             held_sec = int(time.time() - int(pos["entered_at"]))
 
             if market_value < MIN_ORDER_KRW:
+                continue
+
+            early_fail, early_fail_reason = post_entry_strength_fail(ticker, pos, current_price)
+            if early_fail:
+                ok, msg = sell_market_confirmed(ticker, "EARLY_FAIL", pos, current_price, pnl_pct, held_sec)
+                if ok:
+                    send(f"\n⚠️ 진입 직후 힘이 약해서 빠른 정리\n\n📊 {ticker}\n방식: {pos['strategy_label']}\n\n💰 현재가: {fmt_price(current_price)}\n📈 수익률: {fmt_pct(pnl_pct)}\n⏰ 보유시간: {int(held_sec/60)}분\n\n사유:\n{early_fail_reason}\n")
+                else:
+                    send(f"\n⚠️ 빠른 정리 시도했지만 확인 지연\n\n📊 {ticker}\n방식: {pos['strategy_label']}\n\n사유:\n{msg}\n")
                 continue
 
             fail_exit, fail_reason = should_scenario_fail_exit(ticker, pos, current_price)
@@ -2452,7 +2692,7 @@ def monitor_positions():
             traceback.print_exc()
 
 
-CLOSE_TYPES = {"TP", "STOP", "TRAIL_TP", "BREAKEVEN", "TIME_STOP", "SCENARIO_FAIL"}
+CLOSE_TYPES = {"TP", "STOP", "TRAIL_TP", "BREAKEVEN", "TIME_STOP", "SCENARIO_FAIL", "EARLY_FAIL"}
 
 
 def get_closed_logs_all():
@@ -2525,12 +2765,65 @@ def today_command(update, context: CallbackContext):
     send(f"\n📊 오늘 거래 요약\n\n총 종료 거래: {info['total']}\n익절/플러스 종료: {info['wins']}\n손절/마이너스 종료: {info['losses']}\n승률: {info['win_rate']:.2f}%\n누적 수익률: {info['total_pnl']:.2f}%\n평균 수익률: {info['avg_pnl']:.2f}%\n\n최근 종료 거래\n" + "\n".join(lines))
 
 
+
+def summarize_exit_reasons(logs):
+    bucket = {}
+    for x in logs:
+        bucket[x.get("type", "UNKNOWN")] = bucket.get(x.get("type", "UNKNOWN"), 0) + 1
+    lines = []
+    for k, v in sorted(bucket.items(), key=lambda kv: kv[1], reverse=True):
+        lines.append(f"{k}: {v}")
+    return lines
+
+
+def summarize_by_regime(logs):
+    bucket = {}
+    for x in logs:
+        regime = x.get("entry_regime", "UNKNOWN")
+        bucket.setdefault(regime, []).append(x)
+    lines = []
+    for regime, items in sorted(bucket.items(), key=lambda kv: len(kv[1]), reverse=True):
+        info = summarize_logs(items)
+        lines.append(f"{regime} / 거래 {info['total']} / 승률 {info['win_rate']:.2f}% / 평균 {info['avg_pnl']:.2f}%")
+    return lines
+
+
+def summarize_by_pattern(logs):
+    bucket = {}
+    for x in logs:
+        tags = x.get("pattern_tags", [])
+        if not tags:
+            bucket.setdefault("패턴없음", []).append(x)
+            continue
+        for tag in tags[:3]:
+            bucket.setdefault(tag, []).append(x)
+    lines = []
+    for tag, items in sorted(bucket.items(), key=lambda kv: len(kv[1]), reverse=True)[:8]:
+        info = summarize_logs(items)
+        lines.append(f"{tag} / 거래 {info['total']} / 승률 {info['win_rate']:.2f}% / 평균 {info['avg_pnl']:.2f}%")
+    return lines
+
 def summary_strategy_command(update, context: CallbackContext):
     closes = get_closed_logs_all()
     if not closes:
         send("📊 아직 종료된 거래가 없어")
         return
-    send("📊 전략별 전체 결과\n\n" + "\n\n".join(summarize_by_strategy(closes)))
+
+    parts = ["📊 전략별 전체 결과\n\n" + "\n\n".join(summarize_by_strategy(closes))]
+
+    exit_lines = summarize_exit_reasons(closes)
+    if exit_lines:
+        parts.append("🧾 종료 이유\n\n" + "\n".join(exit_lines))
+
+    regime_lines = summarize_by_regime(closes)
+    if regime_lines:
+        parts.append("🌤 장세별 결과\n\n" + "\n".join(regime_lines))
+
+    pattern_lines = summarize_by_pattern(closes)
+    if pattern_lines:
+        parts.append("📐 패턴별 결과\n\n" + "\n".join(pattern_lines))
+
+    send("\n\n".join(parts))
 
 
 def today_strategy_command(update, context: CallbackContext):
@@ -2547,6 +2840,10 @@ def btc_command(update, context: CallbackContext):
 
 def status_command(update, context: CallbackContext):
     parts = []
+
+    paused, pause_msg = should_pause_auto_buy_now()
+    if paused:
+        parts.append("⏸ 자동매수 쉬는 중\n\n" + pause_msg)
 
     if active_positions:
         lines, dust_lines = [], []
