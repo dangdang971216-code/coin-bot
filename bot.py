@@ -13,7 +13,7 @@ from telegram.ext import Updater, CommandHandler, CallbackContext
 # =========================================================
 # 버전
 # =========================================================
-BOT_VERSION = "수익형 v6.5.5b"
+BOT_VERSION = "수익형 v6.5.6"
 
 # =========================================================
 # 환경변수
@@ -82,15 +82,15 @@ BTC_MA_FILTER = True
 
 REGIME_FILTER_ON = True
 REGIME_BLOCK_BREAKOUT_ON_SIDEWAYS = True
-REGIME_SIDEWAYS_MAX_ABS_PCT = 0.55
-REGIME_WEAK_MAX_ABS_PCT = -0.8
+REGIME_SIDEWAYS_MAX_ABS_PCT = 0.50
+REGIME_WEAK_MAX_ABS_PCT = -0.70
 REGIME_STRONG_UP_PCT = 1.0
 
 # =========================================================
 # 리스크 관리
 # =========================================================
 BASE_STOP_LOSS_PCT = -1.7
-BASE_TP_PCT = 4.8
+BASE_TP_PCT = 4.6
 
 TRAIL_START_PCT = 2.8
 TRAIL_BACKOFF_PCT = 1.15
@@ -102,20 +102,20 @@ TIME_STOP_MIN_SEC = 480
 TIME_STOP_MAX_SEC = 1080
 
 # v6.5.3 완화
-MIN_EXPECTED_EDGE_SCORE = 7.1
+MIN_EXPECTED_EDGE_SCORE = 7.4
 MIN_EXPECTED_TP_PCT = 3.2
 
 # =========================================================
 # 전략 기준
 # =========================================================
 EARLY_CFG = {
-    "change_min": 0.75,
-    "change_max": 2.50,
-    "vol_min": 2.30,
-    "rsi_min": 45,
-    "rsi_max": 64,
-    "range_min": 0.80,
-    "jump_min": 0.08,
+    "change_min": 0.80,
+    "change_max": 2.20,
+    "vol_min": 2.80,
+    "rsi_min": 46,
+    "rsi_max": 61,
+    "range_min": 0.90,
+    "jump_min": 0.10,
 }
 
 PREPUMP_CFG = {
@@ -165,18 +165,18 @@ CHASE_CFG = {
 }
 
 TREND_CONT_CFG = {
-    "trend_change_min": 2.20,
-    "trend_change_max": 9.50,
-    "pullback_max": 2.20,
+    "trend_change_min": 2.40,
+    "trend_change_max": 8.80,
+    "pullback_max": 2.00,
     "recovery_min": 0.35,
-    "recovery_max": 1.45,
-    "last1_change_max": 0.90,
-    "vol_reaccel_min": 1.45,
+    "recovery_max": 1.25,
+    "last1_change_max": 0.55,
+    "vol_reaccel_min": 1.60,
     "rsi_min": 50,
-    "rsi_max": 74,
-    "high_retest_gap_min": 0.12,
-    "high_retest_gap_max": 0.80,
-    "extension_max": 0.18,
+    "rsi_max": 70,
+    "high_retest_gap_min": 0.18,
+    "high_retest_gap_max": 0.65,
+    "extension_max": 0.08,
 }
 
 # PREPUMP 후보 저장용
@@ -241,10 +241,10 @@ USE_PULLBACK_RECHECK_BONUS = True
 # =========================================================
 PENDING_BUY_ON = True
 PENDING_BUY_MAX_ITEMS = 6
-PENDING_BUY_TTL_SEC = 210
-PENDING_BUY_MIN_EDGE = 6.0
-PENDING_BUY_MIN_SCORE = 5.6
-PENDING_BUY_RECHECK_MIN_SEC = 20
+PENDING_BUY_TTL_SEC = 165
+PENDING_BUY_MIN_EDGE = 6.3
+PENDING_BUY_MIN_SCORE = 5.9
+PENDING_BUY_RECHECK_MIN_SEC = 26
 
 PROMOTE_RECOVERY_TO_HIGH_PCT = 99.7
 PROMOTE_MIN_VOL_RATIO = 1.15
@@ -253,10 +253,11 @@ PROMOTE_MAX_BREAKOUT_EXTENSION_PCT = 0.45
 # =========================================================
 # watch 재알림 제어
 # =========================================================
-WATCH_RENOTICE_SEC = 600
-WATCH_VOL_IMPROVE_DELTA = 0.8
-WATCH_CHANGE_IMPROVE_DELTA = 0.7
-WATCH_SCORE_IMPROVE_DELTA = 1.2
+WATCH_RENOTICE_SEC = 1800
+WATCH_VOL_IMPROVE_DELTA = 1.0
+WATCH_CHANGE_IMPROVE_DELTA = 0.9
+WATCH_SCORE_IMPROVE_DELTA = 1.5
+WATCH_RENOTICE_MAX_PER_TICKER = 2
 
 # =========================================================
 # 리포트 간격
@@ -274,6 +275,7 @@ active_positions = {}
 recent_signal_alerts = {}
 recent_watch_alerts = {}
 recent_watch_snapshots = {}
+recent_watch_renotice_counts = {}
 pending_sells = {}
 pending_buy_candidates = {}
 
@@ -369,18 +371,16 @@ def send_startup_message():
 - 상승 시작형
 - 눌림 반등형
 
-v6.5.5c 핵심:
-- 추세 지속형 전략 유지
-- 추세 지속형 고점 근접 진입 보정
-- 강한 주도주 눌림 후 재가속 탐지
-- 기존 초반형/직전형 유지
+v6.5.6 핵심:
+- 횡보/혼조 장 자동매수 더 보수화
+- 초반 선점형 품질 필터 강화
+- 추세 지속형 고점 근접 진입 추가 보정
+- 후보 재확인 반복 알림 축소
 - 좋은 상승 시작형은 2차확인 후보 허용
-- 후보알림 반복 억제 유지
 - 좋아졌을 때만 강화 알림
 - 늦은 진입 방지 유지
 - 진입 후 힘 확인 강화
 - 연속 실패 시 자동 쉬기
-- 원인 통계 보강
 - 수동 쉬기 해제(/reset_pause)
 - 매도 exit 보정
 
@@ -1314,13 +1314,22 @@ def analyze_early_entry(ticker: str, data: dict):
 
     last_close = float(df["close"].iloc[-1])
     prev_close = float(df["close"].iloc[-2])
-    if prev_close <= 0:
+    prev2_close = float(df["close"].iloc[-3]) if len(df) >= 3 else prev_close
+    if prev_close <= 0 or prev2_close <= 0:
         return None
     last_jump_pct = ((last_close - prev_close) / prev_close) * 100
+    last2_change_pct = ((last_close - prev2_close) / prev2_close) * 100
+    upper_wick_ratio = get_upper_wick_ratio(df)
     if last_jump_pct < EARLY_CFG["jump_min"]:
         return None
+    if last_jump_pct > 0.78:
+        return None
+    if last2_change_pct > 1.30:
+        return None
+    if upper_wick_ratio > 0.36:
+        return None
 
-    base_score_v = 5.9 + min(vol_ratio, 4.2) * 0.9 + min(change_pct, 2.5) * 0.8 + min(data.get("surge_score", 0), 8) * 0.18
+    base_score_v = 5.8 + min(vol_ratio, 4.2) * 0.86 + min(change_pct, 2.2) * 0.75 + min(data.get("surge_score", 0), 8) * 0.16
     base_score_v += pattern_bonus_score(pattern_info)
 
     stop_loss_pct = dynamic_stop_loss_pct(vol_ratio, range_pct, "EARLY")
@@ -1351,6 +1360,8 @@ def analyze_early_entry(ticker: str, data: dict):
             f"- 거래량 {vol_ratio:.2f}배\n"
             f"- 최근 상승 {change_pct:.2f}%\n"
             f"- RSI {rsi:.2f}\n"
+            f"- 마지막 1봉 상승 {last_jump_pct:.2f}%\n"
+            f"- 최근 2봉 상승 {last2_change_pct:.2f}%\n"
             f"- 초입 흐름이 살아있어"
             f"{pattern_reason_suffix(pattern_info)}"
         ),
@@ -2059,9 +2070,22 @@ def should_auto_buy_signal(signal, regime=None):
         return False
     if tp < MIN_EXPECTED_TP_PCT:
         return False
-    if edge < MIN_EXPECTED_EDGE_SCORE:
-        return False
-    if regime and not strategy_allowed_in_regime(strategy, regime):
+    required_edge = MIN_EXPECTED_EDGE_SCORE
+    if regime:
+        if not strategy_allowed_in_regime(strategy, regime):
+            return False
+        if regime.get("name") == "SIDEWAYS":
+            required_edge += 0.8
+            if strategy == "EARLY":
+                required_edge += 0.5
+        elif regime.get("name") == "WEAK":
+            required_edge += 1.0
+            if strategy in ["EARLY", "TREND_CONT"]:
+                required_edge += 0.4
+        elif regime.get("name") == "NORMAL":
+            if strategy == "EARLY":
+                required_edge += 0.2
+    if edge < required_edge:
         return False
     return True
 
@@ -2181,8 +2205,25 @@ def candidate_promote_ok(candidate, current_signal, regime):
         return False, "1분봉 부족"
 
     vol_ratio_now = get_vol_ratio(df, 2, 8)
-    if vol_ratio_now < PROMOTE_MIN_VOL_RATIO:
+    required_vol = PROMOTE_MIN_VOL_RATIO
+    if current_signal["strategy"] == "EARLY":
+        required_vol += 0.15
+    elif current_signal["strategy"] == "TREND_CONT":
+        required_vol += 0.05
+    if vol_ratio_now < required_vol:
         return False, "거래량 재확인 부족"
+
+    if current_signal["strategy"] == "TREND_CONT":
+        ref_high_now = safe_float(current_signal.get("reference_high", 0))
+        if ref_high_now > 0:
+            retest_gap_now = ((ref_high_now - current_price) / current_price) * 100
+            if retest_gap_now < TREND_CONT_CFG["high_retest_gap_min"]:
+                return False, "고점에 너무 붙음"
+    if current_signal["strategy"] == "EARLY":
+        last1 = get_recent_change_pct(df, 1)
+        last2 = get_recent_change_pct(df, 2)
+        if last1 > 0.78 or last2 > 1.30:
+            return False, "초반형이 너무 급함"
 
     block, reason = late_entry_block(current_signal["strategy"], df, current_price)
     if block:
@@ -2345,15 +2386,20 @@ def should_send_watch_alert(ticker: str, item: dict, now_ts: float):
     if reasons:
         return True, "upgrade", " / ".join(reasons)
 
-    if now_ts - prev_time >= WATCH_RENOTICE_SEC:
+    renotice_count = int(recent_watch_renotice_counts.get(ticker, 0))
+    if now_ts - prev_time >= WATCH_RENOTICE_SEC and renotice_count < WATCH_RENOTICE_MAX_PER_TICKER:
         return True, "renotice", "시간이 지나 다시 확인 알림"
 
     return False, "", ""
 
 
-def save_watch_snapshot(ticker: str, item: dict, now_ts: float):
+def save_watch_snapshot(ticker: str, item: dict, now_ts: float, alert_type: str = "new"):
     recent_watch_alerts[ticker] = now_ts
     recent_watch_snapshots[ticker] = build_watch_snapshot(item)
+    if alert_type in ["new", "upgrade"]:
+        recent_watch_renotice_counts[ticker] = 0
+    elif alert_type == "renotice":
+        recent_watch_renotice_counts[ticker] = int(recent_watch_renotice_counts.get(ticker, 0)) + 1
 
 
 def signal_score(signal):
@@ -2433,7 +2479,7 @@ def scan_watchlist(shared_cache=None):
         else:
             new_lines.append(base_line)
 
-        save_watch_snapshot(ticker, item, now_ts)
+        save_watch_snapshot(ticker, item, now_ts, alert_type=alert_type)
 
     if new_lines:
         send("👀 빠른 후보 알림\n\n" + "\n\n".join(new_lines))
