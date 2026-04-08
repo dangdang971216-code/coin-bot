@@ -13,7 +13,7 @@ from telegram.ext import Updater, CommandHandler, CallbackContext
 # =========================
 # 버전
 # =========================
-BOT_VERSION = "수익형 v6.5"
+BOT_VERSION = "수익형 v6.5.1"
 
 # =========================
 # 환경변수
@@ -205,8 +205,7 @@ PENDING_BUY_MIN_EDGE = 6.6
 PENDING_BUY_MIN_SCORE = 6.2
 PENDING_BUY_RECHECK_MIN_SEC = 20
 
-# 후보 승격 조건
-PROMOTE_RECOVERY_TO_HIGH_PCT = 99.7   # 후보 당시 기준 고점의 99.7% 회복
+PROMOTE_RECOVERY_TO_HIGH_PCT = 99.7
 PROMOTE_MIN_VOL_RATIO = 1.2
 PROMOTE_MAX_BREAKOUT_EXTENSION_PCT = 0.45
 
@@ -311,12 +310,14 @@ def send_startup_message():
 - 상승 시작형
 - 눌림 반등형
 
-v6.5 핵심:
+v6.5.1 핵심:
 - 쉬는 장 필터 강화
 - 늦은 진입 방지
 - 시나리오 실패 빠른 정리
 - 차트 구조 5개 반영
 - 후보알림 → 2차확인 → 자동매수 승격
+- 보유중/대기중 코인 후보알림 중복 제거
+- TIME_STOP 문구 자연화
 - 공유 캐시
 - 매도 exit 보정
 
@@ -1180,7 +1181,6 @@ def passes_core_pattern_filter(strategy, pattern_info):
         return True
 
     p = pattern_info["patterns"]
-
     hl = p.get("higher_lows", False)
     bc = p.get("box_compression", False)
     bh = p.get("big_bull_half_hold", False)
@@ -2281,6 +2281,13 @@ def cooldown_ok(ticker):
     last = recent_signal_alerts.get(ticker, 0)
     return (time.time() - last) >= 300
 
+def is_ticker_blocked_for_watch_alert(ticker: str) -> bool:
+    return (
+        ticker in active_positions
+        or ticker in pending_buy_candidates
+        or ticker in pending_sells
+    )
+
 # =========================
 # 후보 추출
 # =========================
@@ -2356,6 +2363,10 @@ def scan_watchlist(shared_cache=None):
 
     for item in top:
         ticker = item["ticker"]
+
+        if is_ticker_blocked_for_watch_alert(ticker):
+            continue
+
         prev = recent_watch_alerts.get(ticker, 0)
         if now_ts - prev < WATCH_REPORT_INTERVAL:
             continue
@@ -2503,6 +2514,13 @@ def should_scenario_fail_exit(ticker, pos, current_price):
 
     return False, ""
 
+def build_time_stop_comment(pnl_pct: float) -> str:
+    if pnl_pct >= 0.2:
+        return "짧게 수익이 났지만 크게 뻗는 힘은 약해서 정리했어."
+    if pnl_pct > -0.15:
+        return "빠르게 안 뻗어서 거의 본전 근처에서 정리했어."
+    return "힘이 약해서 정리했어."
+
 # =========================
 # 포지션 관리
 # =========================
@@ -2575,6 +2593,7 @@ def monitor_positions():
                 if pnl_pct < 0.8:
                     ok, msg = sell_market_confirmed(ticker, "TIME_STOP", pos, current_price, pnl_pct, held_sec)
                     if ok:
+                        comment = build_time_stop_comment(pnl_pct)
                         send(
                             f"""
 ⏱ 오래 안 가서 정리
@@ -2586,7 +2605,7 @@ def monitor_positions():
 📈 수익률: {fmt_pct(pnl_pct)}
 ⏰ 보유시간: {int(held_sec/60)}분
 
-힘이 약해서 정리했어.
+{comment}
 """
                         )
                     else:
