@@ -13,7 +13,7 @@ from telegram.ext import Updater, CommandHandler, CallbackContext
 # =========================================================
 # 버전
 # =========================================================
-BOT_VERSION = "수익형 v6.5.7"
+BOT_VERSION = "수익형 v6.5.8"
 
 # =========================================================
 # 환경변수
@@ -179,6 +179,19 @@ TREND_CONT_CFG = {
     "extension_max": 0.08,
 }
 
+# =========================================================
+# 주도주(LEADER SCORE)
+# =========================================================
+LEADER_BASE_MIN_FOR_PRIORITY = 4.8
+LEADER_HIGH_MIN = 6.2
+LEADER_STRONG_MIN = 7.2
+LEADER_TOP_TURNOVER_BONUS = 1.2
+LEADER_TOP_SURGE_BONUS = 1.0
+LEADER_REPEAT_SEEN_BONUS = 0.45
+LEADER_MAX_REPEAT_BONUS = 1.35
+LEADER_SIDEWAYS_EDGE_DISCOUNT = 0.45
+LEADER_WEAK_EDGE_DISCOUNT = 0.25
+
 # PREPUMP 후보 저장용
 PREPUMP_PENDING_EDGE_MIN = 5.8
 PREPUMP_PENDING_SCORE_MIN = 5.4
@@ -278,6 +291,7 @@ recent_watch_snapshots = {}
 recent_watch_renotice_counts = {}
 pending_sells = {}
 pending_buy_candidates = {}
+recent_leader_board = {}
 
 paused_until = 0
 pause_reason = ""
@@ -371,7 +385,7 @@ def send_startup_message():
 - 상승 시작형
 - 눌림 반등형
 
-v6.5.7 핵심:
+v6.5.8 핵심:
 - S/A/B 등급제로 좋은 거래 특별대우
 - S급은 목표 수익 / 시간정리 / 본절보호를 더 넓게 운영
 - 횡보/혼조 장의 애매한 자동매수는 더 보수화
@@ -984,6 +998,7 @@ def classify_trade_tier(signal, regime=None):
     rsi = safe_float(signal.get("rsi", 0))
     tags = set(signal.get("pattern_tags", []))
     regime_name = (regime or {}).get("name", "NORMAL")
+    leader_score = safe_float(signal.get("leader_score", 0))
 
     if (
         strategy in TRADE_TIER_S_ALLOWED
@@ -992,10 +1007,12 @@ def classify_trade_tier(signal, regime=None):
         and rsi <= 66
         and regime_name in TRADE_TIER_S_BTC_OK
         and (tags.intersection({"저점높임", "양봉절반유지", "눌림재확인"}) or strategy == "TREND_CONT")
+        and leader_score >= LEADER_HIGH_MIN
     ):
         return "S"
     if edge >= TRADE_TIER_A_EDGE_MIN and vol >= TRADE_TIER_A_VOL_MIN:
-        return "A"
+        if leader_score >= LEADER_BASE_MIN_FOR_PRIORITY or strategy in ["TREND_CONT", "PRE_BREAKOUT"]:
+            return "A"
     return "B"
 
 
@@ -1030,7 +1047,35 @@ def apply_trade_tier_adjustments(signal, regime=None):
 
 def signal_priority_value(signal):
     tier_bonus = {"S": 1.15, "A": 0.35, "B": 0.0}.get(signal.get("trade_tier", "B"), 0.0)
-    return float(signal.get("edge_score", signal.get("signal_score", 0))) + tier_bonus
+    leader_bonus = min(safe_float(signal.get("leader_score", 0)), 8.0) * 0.22
+    return float(signal.get("edge_score", signal.get("signal_score", 0))) + tier_bonus + leader_bonus
+
+
+def update_recent_leader_board(cache):
+    global recent_leader_board
+    board = {}
+    ranked = sorted(cache.items(), key=lambda kv: safe_float(kv[1].get("leader_score", 0)), reverse=True)[:15]
+    now_ts = time.time()
+    for rank, (ticker, data) in enumerate(ranked, start=1):
+        board[ticker] = {
+            "rank": rank,
+            "leader_score": safe_float(data.get("leader_score", 0)),
+            "time": now_ts,
+        }
+    recent_leader_board = board
+
+
+def leader_reason_suffix(signal):
+    leader_score = safe_float(signal.get("leader_score", 0))
+    if leader_score <= 0:
+        return ""
+    return f"\n- 주도주 점수 {leader_score:.2f}"
+
+
+def get_pending_seen_count(ticker: str):
+    if ticker in pending_buy_candidates:
+        return int(pending_buy_candidates[ticker].get("seen_count", 0))
+    return 0
 
 # FULL FILE CONTINUES BELOW EXACTLY AS NEEDED FOR THE BOT.
 # To keep this tool call manageable, the complete file is saved directly.
@@ -1080,6 +1125,32 @@ def get_market_universe(force=False):
     if not rows:
         return market_universe
 
+    turnover_rank = {item["ticker"]: i + 1 for i, item in enumerate(sorted(rows, key=lambda x: x["turnover_recent"], reverse=True))}
+    surge_rank = {item["ticker"]: i + 1 for i, item in enumerate(sorted(rows, key=lambda x: x["surge_score"], reverse=True))}
+
+    for item in rows:
+        t_rank = turnover_rank.get(item["ticker"], 999)
+        s_rank = surge_rank.get(item["ticker"], 999)
+        leader_score = 0.0
+        if t_rank <= 5:
+            leader_score += LEADER_TOP_TURNOVER_BONUS
+        elif t_rank <= 15:
+            leader_score += 0.8
+        elif t_rank <= 30:
+            leader_score += 0.45
+
+        if s_rank <= 5:
+            leader_score += LEADER_TOP_SURGE_BONUS
+        elif s_rank <= 15:
+            leader_score += 0.7
+        elif s_rank <= 30:
+            leader_score += 0.35
+
+        leader_score += min(item["surge_score"], 8.0) * 0.18
+        item["leader_score"] = round(leader_score, 2)
+        item["turnover_rank"] = t_rank
+        item["surge_rank"] = s_rank
+
     abs_sorted = sorted(rows, key=lambda x: x["turnover_recent"], reverse=True)[:ABSOLUTE_TURNOVER_CANDIDATES]
     surge_sorted = sorted(rows, key=lambda x: x["surge_score"], reverse=True)[:SURGE_CANDIDATES]
     merged = {}
@@ -1087,7 +1158,7 @@ def get_market_universe(force=False):
         merged[item["ticker"]] = item
 
     selected = list(merged.values())
-    selected.sort(key=lambda x: (x["surge_score"] * 1.15) + (x["turnover_score"] * 0.35), reverse=True)
+    selected.sort(key=lambda x: (x["leader_score"] * 1.20) + (x["surge_score"] * 0.95) + (x["turnover_score"] * 0.35), reverse=True)
     market_universe = selected[:TOP_TICKERS]
     market_universe_time = now_ts
     return market_universe
@@ -1121,6 +1192,9 @@ def build_shared_market_cache(force=False):
                 "df_3m": row["df_3m"],
                 "turnover": row["turnover_recent"],
                 "surge_score": row["surge_score"],
+                "leader_score": row.get("leader_score", 0),
+                "turnover_rank": row.get("turnover_rank", 999),
+                "surge_rank": row.get("surge_rank", 999),
             }
         except Exception:
             continue
@@ -1128,6 +1202,7 @@ def build_shared_market_cache(force=False):
     if cache:
         shared_market_cache = cache
         shared_market_cache_time = now_ts
+        update_recent_leader_board(cache)
     return shared_market_cache
 
 
@@ -1301,7 +1376,7 @@ def late_entry_block(strategy, df, current_price):
 
 
 def base_signal(ticker, strategy, strategy_label, current_price, vol_ratio, change_pct, rsi=None, range_pct=None,
-                signal_score=0, edge_score=0, stop_loss_pct=0, take_profit_pct=0, time_stop_sec=0,
+                signal_score=0, edge_score=0, leader_score=0, stop_loss_pct=0, take_profit_pct=0, time_stop_sec=0,
                 invalid_break_level=0.0, pattern_tags=None, reference_high=0.0, reference_low=0.0, reason=""):
     return {
         "ticker": ticker,
@@ -1314,6 +1389,7 @@ def base_signal(ticker, strategy, strategy_label, current_price, vol_ratio, chan
         "range_pct": r(range_pct, 2) if range_pct is not None else 0.0,
         "signal_score": r(signal_score, 2),
         "edge_score": r(edge_score, 2),
+        "leader_score": r(leader_score, 2),
         "stop_loss_pct": stop_loss_pct,
         "take_profit_pct": take_profit_pct,
         "time_stop_sec": time_stop_sec,
@@ -1403,6 +1479,7 @@ def analyze_early_entry(ticker: str, data: dict):
         range_pct=range_pct,
         signal_score=base_score_v,
         edge_score=edge_score_v,
+        leader_score=safe_float(data.get("leader_score", 0)) + min(get_pending_seen_count(ticker) * LEADER_REPEAT_SEEN_BONUS, LEADER_MAX_REPEAT_BONUS),
         stop_loss_pct=stop_loss_pct,
         take_profit_pct=take_profit_pct,
         time_stop_sec=time_stop_sec,
@@ -1418,7 +1495,7 @@ def analyze_early_entry(ticker: str, data: dict):
             f"- 마지막 1봉 상승 {last_jump_pct:.2f}%\n"
             f"- 최근 2봉 상승 {last2_change_pct:.2f}%\n"
             f"- 초입 흐름이 살아있어"
-            f"{pattern_reason_suffix(pattern_info)}"
+            f"{pattern_reason_suffix(pattern_info)}\n- 주도주 점수 {safe_float(data.get("leader_score", 0)):.2f}"
         ),
     )
 
@@ -1467,6 +1544,7 @@ def analyze_prepump_entry(ticker: str, data: dict):
         range_pct=range_pct,
         signal_score=score_v,
         edge_score=edge_v,
+        leader_score=safe_float(data.get("leader_score", 0)) + min(get_pending_seen_count(ticker) * LEADER_REPEAT_SEEN_BONUS, LEADER_MAX_REPEAT_BONUS),
         pattern_tags=pattern_info["tags"],
         reference_high=get_recent_high(df, 8, exclude_last=True),
         reference_low=get_recent_low(df, 8, exclude_last=False),
@@ -1514,6 +1592,7 @@ def analyze_pullback_entry(ticker: str, data: dict):
         change_pct=rebound_pct,
         signal_score=score_v,
         edge_score=score_v,
+        leader_score=safe_float(data.get("leader_score", 0)) + min(get_pending_seen_count(ticker) * LEADER_REPEAT_SEEN_BONUS, LEADER_MAX_REPEAT_BONUS),
         pattern_tags=pattern_info["tags"],
         reason="",
     )
@@ -1605,6 +1684,7 @@ def analyze_trend_cont_entry(ticker: str, data: dict):
         range_pct=get_range_pct(df, 10),
         signal_score=base_score_v,
         edge_score=edge_score_v,
+        leader_score=safe_float(data.get("leader_score", 0)) + min(get_pending_seen_count(ticker) * LEADER_REPEAT_SEEN_BONUS, LEADER_MAX_REPEAT_BONUS),
         stop_loss_pct=stop_loss_pct,
         take_profit_pct=take_profit_pct,
         time_stop_sec=time_stop_sec,
@@ -1619,7 +1699,7 @@ def analyze_trend_cont_entry(ticker: str, data: dict):
             f"- 직전 고점까지 남은 거리 {retest_gap_pct:.2f}%\n"
             f"- 마지막 1봉 상승 {last1_change_pct:.2f}%\n"
             f"- RSI {rsi:.2f}"
-            f"{pattern_reason_suffix(pattern_info)}"
+            f"{pattern_reason_suffix(pattern_info)}\n- 주도주 점수 {safe_float(data.get("leader_score", 0)):.2f}"
         ),
     )
 
@@ -1699,6 +1779,7 @@ def analyze_pre_breakout_entry(ticker: str, data: dict):
         range_pct=range_pct,
         signal_score=base_score_v,
         edge_score=edge_score_v,
+        leader_score=safe_float(data.get("leader_score", 0)) + min(get_pending_seen_count(ticker) * LEADER_REPEAT_SEEN_BONUS, LEADER_MAX_REPEAT_BONUS),
         stop_loss_pct=stop_loss_pct,
         take_profit_pct=take_profit_pct,
         time_stop_sec=time_stop_sec,
@@ -1712,7 +1793,7 @@ def analyze_pre_breakout_entry(ticker: str, data: dict):
             f"- 최근 상승 {change_pct:.2f}%\n"
             f"- 직전 고점까지 남은 거리 {gap_to_break:.2f}%\n"
             f"- RSI {rsi:.2f}"
-            f"{pattern_reason_suffix(pattern_info)}"
+            f"{pattern_reason_suffix(pattern_info)}\n- 주도주 점수 {safe_float(data.get("leader_score", 0)):.2f}"
         ),
     )
 
@@ -1791,6 +1872,7 @@ def analyze_breakout_entry(ticker: str, data: dict):
         range_pct=range_pct,
         signal_score=base_score_v,
         edge_score=edge_score_v,
+        leader_score=safe_float(data.get("leader_score", 0)) + min(get_pending_seen_count(ticker) * LEADER_REPEAT_SEEN_BONUS, LEADER_MAX_REPEAT_BONUS),
         stop_loss_pct=stop_loss_pct,
         take_profit_pct=take_profit_pct,
         time_stop_sec=time_stop_sec,
@@ -1804,7 +1886,7 @@ def analyze_breakout_entry(ticker: str, data: dict):
             f"- 최근 상승 {change_pct:.2f}%\n"
             f"- 돌파폭 {break_pct:.2f}%\n"
             f"- RSI {rsi:.2f}"
-            f"{pattern_reason_suffix(pattern_info)}"
+            f"{pattern_reason_suffix(pattern_info)}\n- 주도주 점수 {safe_float(data.get("leader_score", 0)):.2f}"
         ),
     )
 
@@ -1874,6 +1956,7 @@ def analyze_chase_entry(ticker: str, data: dict):
         range_pct=range_pct,
         signal_score=base_score_v,
         edge_score=edge_score_v,
+        leader_score=safe_float(data.get("leader_score", 0)) + min(get_pending_seen_count(ticker) * LEADER_REPEAT_SEEN_BONUS, LEADER_MAX_REPEAT_BONUS),
         stop_loss_pct=stop_loss_pct,
         take_profit_pct=take_profit_pct,
         time_stop_sec=time_stop_sec,
@@ -1886,7 +1969,7 @@ def analyze_chase_entry(ticker: str, data: dict):
             f"- 거래량 {vol_ratio:.2f}배\n"
             f"- 최근 상승 {change_pct:.2f}%\n"
             f"- RSI {rsi:.2f}"
-            f"{pattern_reason_suffix(pattern_info)}"
+            f"{pattern_reason_suffix(pattern_info)}\n- 주도주 점수 {safe_float(data.get("leader_score", 0)):.2f}"
         ),
     )
 
@@ -2097,7 +2180,7 @@ def cleanup_pending_buy_candidates():
             continue
 
     if len(pending_buy_candidates) > PENDING_BUY_MAX_ITEMS:
-        sorted_items = sorted(pending_buy_candidates.items(), key=lambda kv: safe_float(kv[1].get("edge_score", 0)), reverse=True)
+        sorted_items = sorted(pending_buy_candidates.items(), key=lambda kv: (safe_float(kv[1].get("leader_score", 0)) * 0.8) + safe_float(kv[1].get("edge_score", 0)), reverse=True)
         keep = dict(sorted_items[:PENDING_BUY_MAX_ITEMS])
         pending_buy_candidates.clear()
         pending_buy_candidates.update(keep)
@@ -2133,6 +2216,7 @@ def should_auto_buy_signal(signal, regime=None):
         return False
     required_edge = MIN_EXPECTED_EDGE_SCORE
     tier = signal.get("trade_tier", "B")
+    leader_score = safe_float(signal.get("leader_score", 0))
     if regime:
         if not strategy_allowed_in_regime(strategy, regime):
             return False
@@ -2142,16 +2226,20 @@ def should_auto_buy_signal(signal, regime=None):
                 required_edge += 0.7
             if tier == "B":
                 required_edge += 0.4
+            if leader_score >= LEADER_HIGH_MIN:
+                required_edge -= LEADER_SIDEWAYS_EDGE_DISCOUNT
         elif regime.get("name") == "WEAK":
             required_edge += 1.1
             if strategy in ["EARLY", "TREND_CONT"]:
                 required_edge += 0.5
             if tier != "S":
                 required_edge += 0.3
+            if leader_score >= LEADER_STRONG_MIN:
+                required_edge -= LEADER_WEAK_EDGE_DISCOUNT
         elif regime.get("name") == "NORMAL":
             if strategy == "EARLY":
                 required_edge += 0.2
-    if strategy == "EARLY" and tier == "B" and regime and regime.get("name") in ["SIDEWAYS", "WEAK"]:
+    if strategy == "EARLY" and tier == "B" and regime and regime.get("name") in ["SIDEWAYS", "WEAK"] and leader_score < LEADER_HIGH_MIN:
         return False
     if edge < required_edge:
         return False
@@ -2200,9 +2288,11 @@ def add_or_refresh_pending_buy_candidate(signal, regime):
         "first_price": safe_float(signal.get("current_price", 0)),
         "edge_score": safe_float(signal.get("edge_score", 0)),
         "signal_score": safe_float(signal.get("signal_score", 0)),
+        "leader_score": safe_float(signal.get("leader_score", 0)),
         "reference_high": safe_float(signal.get("reference_high", 0)),
         "reference_low": safe_float(signal.get("reference_low", 0)),
         "pattern_tags": signal.get("pattern_tags", []),
+        "seen_count": 1,
     }
 
     if ticker in pending_buy_candidates:
@@ -2210,6 +2300,9 @@ def add_or_refresh_pending_buy_candidate(signal, regime):
         data["created_at"] = safe_float(old.get("created_at", now_ts))
         if safe_float(data["edge_score"]) < safe_float(old.get("edge_score", 0)):
             data["edge_score"] = safe_float(old.get("edge_score", 0))
+        if safe_float(data["leader_score"]) < safe_float(old.get("leader_score", 0)):
+            data["leader_score"] = safe_float(old.get("leader_score", 0))
+        data["seen_count"] = int(old.get("seen_count", 0)) + 1
         if not data["reference_high"]:
             data["reference_high"] = safe_float(old.get("reference_high", 0))
         if not data["reference_low"]:
@@ -2255,11 +2348,14 @@ def candidate_promote_ok(candidate, current_signal, regime):
     if current_price <= 0:
         return False, "가격 오류"
 
+    leader_score = max(safe_float(candidate.get("leader_score", 0)), safe_float(current_signal.get("leader_score", 0)))
     if reference_high > 0:
-        if current_price < reference_high * (PROMOTE_RECOVERY_TO_HIGH_PCT / 100):
+        recovery_pct = PROMOTE_RECOVERY_TO_HIGH_PCT if leader_score < LEADER_HIGH_MIN else PROMOTE_RECOVERY_TO_HIGH_PCT - 0.15
+        if current_price < reference_high * (recovery_pct / 100):
             return False, "고점 회복 부족"
         extension_pct = ((current_price - reference_high) / reference_high) * 100
-        if extension_pct > PROMOTE_MAX_BREAKOUT_EXTENSION_PCT:
+        extension_limit = PROMOTE_MAX_BREAKOUT_EXTENSION_PCT if leader_score < LEADER_HIGH_MIN else PROMOTE_MAX_BREAKOUT_EXTENSION_PCT + 0.08
+        if extension_pct > extension_limit:
             return False, "재확인 후 너무 위"
 
     if reference_low > 0 and current_price < reference_low * 0.998:
@@ -2319,7 +2415,7 @@ def process_pending_buy_promotions(shared_cache=None):
     if not cache:
         return
 
-    candidates_sorted = sorted(pending_buy_candidates.values(), key=lambda x: safe_float(x.get("edge_score", 0)), reverse=True)
+    candidates_sorted = sorted(pending_buy_candidates.values(), key=lambda x: (safe_float(x.get("leader_score", 0)) * 0.8) + safe_float(x.get("edge_score", 0)), reverse=True)
 
     for item in candidates_sorted:
         ticker = item["ticker"]
@@ -2363,7 +2459,7 @@ def process_pending_buy_promotions(shared_cache=None):
 🚀 후보 승격 후 자동매수 완료
 
 📊 {ticker}
-방식: {current_signal['strategy_label']} / 등급 {current_signal.get('trade_tier','B')}
+방식: {current_signal['strategy_label']} / 주도주 {safe_float(current_signal.get('leader_score',0)):.2f} / 등급 {current_signal.get('trade_tier','B')}
 
 💰 매수가(보정): {fmt_price(result['entry'])}
 📦 수량: {result['qty']:.6f}
@@ -2376,6 +2472,7 @@ def process_pending_buy_promotions(shared_cache=None):
 
 처음엔 후보였는데,
 2차 확인 후 다시 강해져서 들어갔어.
+주도주 점수도 높게 유지된 상태였어.
 """
             )
             return
@@ -2405,6 +2502,7 @@ def build_watch_snapshot(item: dict):
         "change_pct": safe_float(item.get("change_pct", 0)),
         "vol_ratio": safe_float(item.get("vol_ratio", 0)),
         "signal_score": safe_float(item.get("signal_score", 0)),
+        "leader_score": safe_float(item.get("leader_score", 0)),
         "pattern_tags": list(item.get("pattern_tags", [])),
         "price": safe_float(item.get("current_price", 0)),
     }
@@ -2426,6 +2524,10 @@ def compare_watch_improvement(prev_snap: dict, item: dict):
     new_score = safe_float(item.get("signal_score", 0))
     if new_score - prev_score >= WATCH_SCORE_IMPROVE_DELTA:
         reasons.append(f"점수 상승 ({prev_score:.2f} → {new_score:.2f})")
+    prev_leader = safe_float(prev_snap.get("leader_score", 0))
+    new_leader = safe_float(item.get("leader_score", 0))
+    if new_leader - prev_leader >= 0.9:
+        reasons.append(f"주도주 점수 상승 ({prev_leader:.2f} → {new_leader:.2f})")
 
     prev_strategy = prev_snap.get("strategy", "")
     new_strategy = item.get("strategy", "")
@@ -2538,7 +2640,7 @@ def scan_watchlist(shared_cache=None):
 
         base_line = (
             f"• {ticker} / {fmt_price(item['current_price'])} / 상승 {float(item.get('change_pct', 0)):.2f}% "
-            f"/ 거래량 {float(item.get('vol_ratio', 0)):.2f}배 / 방식 {item['strategy_label']} / 등급 {item.get('trade_tier','B')}{tag_text}"
+            f"/ 거래량 {float(item.get('vol_ratio', 0)):.2f}배 / 방식 {item['strategy_label']} / 등급 {item.get('trade_tier','B')} / 주도주 {safe_float(item.get('leader_score',0)):.2f}{tag_text}"
         )
 
         if alert_type == "upgrade":
@@ -2610,7 +2712,7 @@ def scan_and_auto_trade(shared_cache=None):
 🔥 자동매수 완료
 
 📊 {ticker}
-방식: {best['strategy_label']} / 등급 {best.get('trade_tier','B')}
+방식: {best['strategy_label']} / 등급 {best.get('trade_tier','B')} / 주도주 {safe_float(best.get('leader_score',0)):.2f}
 
 💰 매수가(보정): {fmt_price(result['entry'])}
 📦 수량: {result['qty']:.6f}
@@ -2744,6 +2846,8 @@ def recover_positions_from_exchange():
                 "trailing_armed": False,
                 "reason": reason,
                 "edge_score": edge_score,
+                "leader_score": leader_score,
+                "trade_tier": trade_tier,
                 "managed_by_bot": True,
                 "invalid_break_level": safe_float(last_buy.get("invalid_break_level", 0)),
                 "entry_strategy_snapshot": strategy,
@@ -3167,7 +3271,7 @@ def status_command(update, context: CallbackContext):
 
             line = (
                 f"• {ticker} / 방식 {pos['strategy_label']} / 진입 {fmt_price(entry)} / 현재 {fmt_price(price)} "
-                f"/ 수익률 {fmt_pct(pnl)} / 평가금액 {fmt_price(value)} / 보유 {held_min}분 / 기대점수 {pos.get('edge_score', 0):.2f}{tag_text}"
+                f"/ 수익률 {fmt_pct(pnl)} / 평가금액 {fmt_price(value)} / 보유 {held_min}분 / 기대점수 {pos.get('edge_score', 0):.2f} / 등급 {pos.get('trade_tier','B')} / 주도주 {safe_float(pos.get('leader_score',0)):.2f}{tag_text}"
             )
             if value < MIN_ORDER_KRW:
                 dust_lines.append(line + " / 상태 소액포지션 대기중")
@@ -3183,7 +3287,7 @@ def status_command(update, context: CallbackContext):
 
     if pending_buy_candidates:
         c_lines = []
-        sorted_candidates = sorted(pending_buy_candidates.values(), key=lambda x: safe_float(x.get("edge_score", 0)), reverse=True)[:6]
+        sorted_candidates = sorted(pending_buy_candidates.values(), key=lambda x: (safe_float(x.get("leader_score", 0)) * 0.8) + safe_float(x.get("edge_score", 0)), reverse=True)[:6]
         for item in sorted_candidates:
             age = int(time.time() - safe_float(item.get("created_at", 0)))
             c_lines.append(f"• {item['ticker']} / 방식 {item.get('strategy_label','?')} / 후보대기 {age}초 / 기대점수 {safe_float(item.get('edge_score', 0)):.2f}")
