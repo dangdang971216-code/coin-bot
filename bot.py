@@ -13,7 +13,7 @@ from telegram.ext import Updater, CommandHandler, CallbackContext
 # =========================
 # 버전
 # =========================
-BOT_VERSION = "수익형 v6.0"
+BOT_VERSION = "수익형 v6.1"
 
 # =========================
 # 환경변수
@@ -35,6 +35,7 @@ bithumb = pybithumb.Bithumb(API_KEY, API_SECRET)
 TIMEZONE = "Asia/Seoul"
 LOG_FILE = "trade_log.json"
 POSITIONS_FILE = "active_positions.json"
+PENDING_SELLS_FILE = "pending_sells.json"
 
 # =========================
 # 기본 설정
@@ -43,7 +44,7 @@ SCAN_INTERVAL = 8
 POSITION_CHECK_INTERVAL = 4
 LOOP_SLEEP = 1
 
-TOP_TICKERS = 150
+TOP_TICKERS = 120
 MIN_ORDER_KRW = 5000
 DUST_KEEP_MIN_KRW = 100
 
@@ -58,6 +59,8 @@ AUTO_BUY = True
 AUTO_BUY_START_HOUR = 0
 AUTO_BUY_END_HOUR = 24
 MAX_HOLDINGS = 1
+
+ALLOW_CHASE = False
 
 # =========================
 # BTC 필터
@@ -134,7 +137,7 @@ BREAKOUT_MIN_RANGE_PCT = 1.0
 BREAKOUT_BREAK_PCT = 0.10
 
 # =========================
-# 추격형 (자동매수 허용, 강화)
+# 추격형 (기본 OFF)
 # =========================
 CHASE_MIN_CHANGE_PCT = 1.8
 CHASE_MAX_CHANGE_PCT = 3.8
@@ -160,6 +163,7 @@ last_watch_report_time = 0
 active_positions = {}
 recent_signal_alerts = {}
 recent_watch_alerts = {}
+pending_sells = {}
 
 # =========================
 # 유틸
@@ -214,9 +218,6 @@ def send(msg: str):
     except Exception as e:
         print(f"[텔레그램 오류] {e}")
 
-# =========================
-# 시작 알림
-# =========================
 def send_startup_message():
     send(
         f"""
@@ -231,76 +232,80 @@ def send_startup_message():
 - 초반 선점형
 - 쏘기 직전형
 - 급등 돌파형
-- 추격형(강한 경우만)
+- 추격형({'켜짐' if ALLOW_CHASE else '꺼짐'})
 
-알림만 하고 자동매수 안 함:
+알림만 하는 전략:
 - 상승 시작형
 - 눌림 반등형
 
-포지션 복구: 켜짐
-매도 확인: 켜짐
-오늘 요약: /today
+개선 포함:
+- API 캐시
+- 거래량 상위 종목 스캔
+- 후보 중복 제거
+- 전략별 통계
+- 매도 실패 재확인
 
-강한 초반 + 강한 돌파만 자동으로 볼게.
+명령어:
+- /status
+- /summary
+- /today
+- /summary_strategy
+- /today_strategy
+- /btc
 """
     )
 
 # =========================
 # 로그
 # =========================
-def load_logs():
-    if not os.path.exists(LOG_FILE):
-        return []
+def load_json_file(path, default):
+    if not os.path.exists(path):
+        return default
     try:
-        with open(LOG_FILE, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception:
-        return []
+        return default
 
-trade_logs = load_logs()
+def save_json_file(path, data):
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[JSON 저장 오류] {path} / {e}")
+
+trade_logs = load_json_file(LOG_FILE, [])
 
 def save_logs():
-    try:
-        with open(LOG_FILE, "w", encoding="utf-8") as f:
-            json.dump(trade_logs, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        print(f"[로그 저장 오류] {e}")
+    save_json_file(LOG_FILE, trade_logs)
 
 def add_log(item: dict):
     trade_logs.append(item)
     save_logs()
 
 # =========================
-# 포지션 파일
+# 포지션 / pending sells
 # =========================
 def save_positions():
-    try:
-        with open(POSITIONS_FILE, "w", encoding="utf-8") as f:
-            json.dump(active_positions, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        print(f"[포지션 저장 오류] {e}")
+    save_json_file(POSITIONS_FILE, active_positions)
 
 def load_positions():
     global active_positions
-    if not os.path.exists(POSITIONS_FILE):
-        active_positions = {}
-        return
-
-    try:
-        with open(POSITIONS_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        active_positions = data if isinstance(data, dict) else {}
-    except Exception as e:
-        print(f"[포지션 불러오기 오류] {e}")
-        active_positions = {}
+    active_positions = load_json_file(POSITIONS_FILE, {})
 
 def clear_position_file_if_empty():
-    if not active_positions:
+    if not active_positions and os.path.exists(POSITIONS_FILE):
         try:
-            if os.path.exists(POSITIONS_FILE):
-                os.remove(POSITIONS_FILE)
+            os.remove(POSITIONS_FILE)
         except Exception:
             pass
+
+def save_pending_sells():
+    save_json_file(PENDING_SELLS_FILE, pending_sells)
+
+def load_pending_sells():
+    global pending_sells
+    pending_sells = load_json_file(PENDING_SELLS_FILE, {})
 
 # =========================
 # 거래소 데이터
@@ -331,8 +336,7 @@ def get_orderbook_best_ask(ticker: str) -> float:
                 return float(ask0.get("price", -1))
 
         return -1
-    except Exception as e:
-        print("[ORDERBOOK ERROR]", ticker, e)
+    except Exception:
         return -1
 
 def get_ohlcv(ticker: str, interval: str = "minute3"):
@@ -354,8 +358,7 @@ def get_krw_balance():
         if not bal or len(bal) < 4:
             return 0.0
         return float(bal[2] or 0)
-    except Exception as e:
-        print("[KRW BALANCE ERROR]", e)
+    except Exception:
         return 0.0
 
 # =========================
@@ -444,7 +447,7 @@ def candle_body_ratio(df):
         return 0.0
 
 # =========================
-# BTC 필터
+# BTC
 # =========================
 def get_btc_df():
     for interval in ["minute60", "minute30", "minute10"]:
@@ -519,6 +522,57 @@ def analyze_btc_flow():
 한줄 해석:
 {desc}
 """
+
+# =========================
+# 캐시 / 상위 종목
+# =========================
+def get_top_volume_tickers():
+    try:
+        tickers = pybithumb.get_tickers()
+    except Exception as e:
+        print(f"[티커 조회 오류] {e}")
+        return []
+
+    rows = []
+    for ticker in tickers:
+        if ticker == "BTC":
+            continue
+        try:
+            df3 = get_ohlcv(ticker, "minute3")
+            if df3 is None or len(df3) < 20:
+                continue
+            price = get_price(ticker)
+            if price <= 0:
+                continue
+            vol_sum = float(df3["volume"].tail(5).sum())
+            amount = vol_sum * price
+            rows.append((ticker, amount, df3))
+        except Exception:
+            continue
+
+    rows.sort(key=lambda x: x[1], reverse=True)
+    return rows[:TOP_TICKERS]
+
+def build_market_cache():
+    cache = {}
+    top_rows = get_top_volume_tickers()
+
+    for ticker, amount, df3 in top_rows:
+        try:
+            price = get_price(ticker)
+            df1 = get_ohlcv(ticker, "minute1")
+            if price <= 0 or df1 is None or len(df1) < 30:
+                continue
+            cache[ticker] = {
+                "price": price,
+                "df_1m": df1,
+                "df_3m": df3,
+                "turnover": amount,
+            }
+        except Exception:
+            continue
+
+    return cache
 
 # =========================
 # 점수/리스크
@@ -612,15 +666,13 @@ def strong_early_entry_filter(df, change_pct, vol_ratio, rsi):
     return True
 
 # =========================
-# 전략 1: 초반 선점형 (자동매수 허용)
+# 전략
 # =========================
-def analyze_early_entry(ticker: str):
-    df = get_ohlcv(ticker, "minute1")
-    if df is None or len(df) < 30:
-        return None
+def analyze_early_entry(ticker: str, data: dict):
+    df = data["df_1m"]
+    current_price = data["price"]
 
-    current_price = get_price(ticker)
-    if current_price <= 0:
+    if df is None or len(df) < 30 or current_price <= 0:
         return None
 
     change_pct = get_recent_change_pct(df, 5)
@@ -676,16 +728,11 @@ def analyze_early_entry(ticker: str):
         )
     }
 
-# =========================
-# 전략 2: 상승 시작형 (알림용)
-# =========================
-def analyze_prepump_entry(ticker: str):
-    df = get_ohlcv(ticker, "minute3")
-    if df is None or len(df) < 30:
-        return None
+def analyze_prepump_entry(ticker: str, data: dict):
+    df = data["df_3m"]
+    current_price = data["price"]
 
-    current_price = get_price(ticker)
-    if current_price <= 0:
+    if df is None or len(df) < 30 or current_price <= 0:
         return None
 
     rsi = safe_float(calculate_rsi(df).iloc[-1])
@@ -721,16 +768,11 @@ def analyze_prepump_entry(ticker: str):
         "signal_score": r(score, 2),
     }
 
-# =========================
-# 전략 3: 눌림 반등형 (알림용)
-# =========================
-def analyze_pullback_entry(ticker: str):
-    df = get_ohlcv(ticker, "minute3")
-    if df is None or len(df) < 35:
-        return None
+def analyze_pullback_entry(ticker: str, data: dict):
+    df = data["df_3m"]
+    current_price = data["price"]
 
-    current_price = get_price(ticker)
-    if current_price <= 0:
+    if df is None or len(df) < 35 or current_price <= 0:
         return None
 
     recent15 = df.tail(15)
@@ -769,16 +811,11 @@ def analyze_pullback_entry(ticker: str):
         "signal_score": r(4.8 + vol_ratio, 2),
     }
 
-# =========================
-# 전략 4: 쏘기 직전형 (자동매수)
-# =========================
-def analyze_pre_breakout_entry(ticker: str):
-    df = get_ohlcv(ticker, "minute1")
-    if df is None or len(df) < 35:
-        return None
+def analyze_pre_breakout_entry(ticker: str, data: dict):
+    df = data["df_1m"]
+    current_price = data["price"]
 
-    current_price = get_price(ticker)
-    if current_price <= 0:
+    if df is None or len(df) < 35 or current_price <= 0:
         return None
 
     change_pct = get_recent_change_pct(df, 5)
@@ -852,16 +889,11 @@ def analyze_pre_breakout_entry(ticker: str):
         )
     }
 
-# =========================
-# 전략 5: 급등 돌파형 (자동매수)
-# =========================
-def analyze_breakout_entry(ticker: str):
-    df = get_ohlcv(ticker, "minute1")
-    if df is None or len(df) < 40:
-        return None
+def analyze_breakout_entry(ticker: str, data: dict):
+    df = data["df_1m"]
+    current_price = data["price"]
 
-    current_price = get_price(ticker)
-    if current_price <= 0:
+    if df is None or len(df) < 40 or current_price <= 0:
         return None
 
     change_pct = get_recent_change_pct(df, 5)
@@ -933,16 +965,14 @@ def analyze_breakout_entry(ticker: str):
         )
     }
 
-# =========================
-# 전략 6: 추격형 (자동매수, 강화)
-# =========================
-def analyze_chase_entry(ticker: str):
-    df = get_ohlcv(ticker, "minute1")
-    if df is None or len(df) < 40:
+def analyze_chase_entry(ticker: str, data: dict):
+    if not ALLOW_CHASE:
         return None
 
-    current_price = get_price(ticker)
-    if current_price <= 0:
+    df = data["df_1m"]
+    current_price = data["price"]
+
+    if df is None or len(df) < 40 or current_price <= 0:
         return None
 
     change_pct = get_recent_change_pct(df, 5)
@@ -1034,13 +1064,14 @@ def calc_order_qty(ticker: str, entry_price: float, multiplier: float = 1.0):
     qty = math.floor(qty * 100000000) / 100000000
     return qty, use_krw, safe_price
 
-def build_position(signal, filled_entry, filled_qty):
+def build_position(signal, filled_entry, filled_qty, used_krw):
     return {
         "ticker": signal["ticker"],
         "strategy": signal["strategy"],
         "strategy_label": signal["strategy_label"],
         "entry_price": filled_entry,
         "qty": filled_qty,
+        "used_krw": used_krw,
         "stop_loss_pct": signal["stop_loss_pct"],
         "take_profit_pct": signal["take_profit_pct"],
         "time_stop_sec": signal["time_stop_sec"],
@@ -1058,7 +1089,8 @@ def buy_market(signal):
     if entry_price <= 0:
         return False, "현재가를 불러오지 못했어"
 
-    before_balance = get_balance(ticker)
+    before_qty = get_balance(ticker)
+    before_krw = get_krw_balance()
     last_error = ""
 
     for multiplier in RETRY_KRW_LEVELS:
@@ -1081,18 +1113,23 @@ def buy_market(signal):
                         continue
                     return False, f"매수 실패 / 응답: {result}"
 
-            after_balance = get_balance(ticker)
-            filled_qty = round(after_balance - before_balance, 8)
+            after_qty = get_balance(ticker)
+            after_krw = get_krw_balance()
+
+            filled_qty = round(after_qty - before_qty, 8)
+            krw_used_real = max(before_krw - after_krw, 0)
 
             if filled_qty <= 0:
                 last_error = f"체결 확인이 안 됐어 / 응답: {result}"
                 continue
 
-            filled_entry = get_price(ticker)
-            if filled_entry <= 0:
+            # 실제 체결가에 가까운 값으로 보정
+            if krw_used_real > 0:
+                filled_entry = krw_used_real / filled_qty
+            else:
                 filled_entry = entry_price
 
-            active_positions[ticker] = build_position(signal, filled_entry, filled_qty)
+            active_positions[ticker] = build_position(signal, filled_entry, filled_qty, krw_used_real)
             save_positions()
 
             add_log({
@@ -1103,7 +1140,7 @@ def buy_market(signal):
                 "strategy_label": signal["strategy_label"],
                 "entry": filled_entry,
                 "qty": filled_qty,
-                "used_krw": use_krw,
+                "used_krw": krw_used_real,
                 "stop_loss_pct": signal["stop_loss_pct"],
                 "take_profit_pct": signal["take_profit_pct"],
                 "time_stop_sec": signal["time_stop_sec"],
@@ -1114,7 +1151,7 @@ def buy_market(signal):
             return True, {
                 "entry": filled_entry,
                 "qty": filled_qty,
-                "used_krw": use_krw,
+                "used_krw": krw_used_real,
             }
 
         except Exception as e:
@@ -1123,7 +1160,7 @@ def buy_market(signal):
     return False, f"매수는 시도했지만 주문 금액이 빡빡해서 실패했어 / 마지막 사유: {last_error}"
 
 # =========================
-# 매도 확인
+# 매도 / pending sell
 # =========================
 def confirm_sell_filled(ticker: str, before_balance: float, retries: int = 6, sleep_sec: float = 1.0):
     for _ in range(retries):
@@ -1132,6 +1169,59 @@ def confirm_sell_filled(ticker: str, before_balance: float, retries: int = 6, sl
         if after_balance < before_balance * 0.2:
             return True, after_balance
     return False, get_balance(ticker)
+
+def make_pending_sell_record(ticker, reason_type, pos, current_price, pnl_pct, held_sec):
+    pending_sells[ticker] = {
+        "time": int(time.time()),
+        "reason_type": reason_type,
+        "ticker": ticker,
+        "strategy": pos["strategy"],
+        "strategy_label": pos["strategy_label"],
+        "entry": float(pos["entry_price"]),
+        "exit_guess": float(current_price),
+        "pnl_pct_guess": round(float(pnl_pct), 2),
+        "held_sec": int(held_sec),
+        "edge_score": pos.get("edge_score", 0),
+    }
+    save_pending_sells()
+
+def finalize_pending_sell_if_closed(ticker):
+    if ticker not in pending_sells:
+        return False
+
+    bal = get_balance(ticker)
+    if bal > 0.0000001:
+        return False
+
+    data = pending_sells[ticker]
+    add_log({
+        "time": int(time.time()),
+        "type": data["reason_type"],
+        "ticker": data["ticker"],
+        "strategy": data["strategy"],
+        "strategy_label": data["strategy_label"],
+        "entry": data["entry"],
+        "exit": data["exit_guess"],
+        "pnl_pct": data["pnl_pct_guess"],
+        "held_sec": data["held_sec"],
+        "edge_score": data["edge_score"],
+        "note": "pending sell 보정 로그",
+    })
+
+    active_positions.pop(ticker, None)
+    pending_sells.pop(ticker, None)
+    save_positions()
+    save_pending_sells()
+    clear_position_file_if_empty()
+    return True
+
+def check_pending_sells():
+    for ticker in list(pending_sells.keys()):
+        try:
+            if finalize_pending_sell_if_closed(ticker):
+                send(f"🧾 매도 확인 지연 보정 완료\n{ticker} 종료 로그를 나중에 확인해서 반영했어.")
+        except Exception as e:
+            print(f"[pending sell 확인 오류] {ticker} / {e}")
 
 def sell_market_confirmed(ticker: str, reason_type: str, pos: dict, current_price: float, pnl_pct: float, held_sec: int = 0):
     try:
@@ -1143,7 +1233,8 @@ def sell_market_confirmed(ticker: str, reason_type: str, pos: dict, current_pric
         ok, _ = confirm_sell_filled(ticker, before_balance)
 
         if not ok:
-            return False, f"매도 요청은 갔지만 체결 확인이 안 됐어 / 응답: {result}"
+            make_pending_sell_record(ticker, reason_type, pos, current_price, pnl_pct, held_sec)
+            return False, f"매도 요청은 갔지만 체결 확인이 늦어졌어 / 응답: {result}"
 
         add_log({
             "time": int(time.time()),
@@ -1159,7 +1250,9 @@ def sell_market_confirmed(ticker: str, reason_type: str, pos: dict, current_pric
         })
 
         active_positions.pop(ticker, None)
+        pending_sells.pop(ticker, None)
         save_positions()
+        save_pending_sells()
         clear_position_file_if_empty()
 
         return True, "매도 완료"
@@ -1215,6 +1308,7 @@ def recover_positions_from_exchange():
                 edge_score = float(last_buy.get("edge_score", 0))
                 reason = last_buy.get("reason", "이전 로그 기반 복구")
                 entered_at = int(last_buy.get("time", int(time.time())))
+                used_krw = float(last_buy.get("used_krw", 0))
             else:
                 entry_price = price
                 strategy = "RECOVER"
@@ -1225,6 +1319,7 @@ def recover_positions_from_exchange():
                 edge_score = 0
                 reason = "현재 잔고 기반 복구"
                 entered_at = int(time.time())
+                used_krw = qty * price
 
             active_positions[ticker] = {
                 "ticker": ticker,
@@ -1232,6 +1327,7 @@ def recover_positions_from_exchange():
                 "strategy_label": strategy_label,
                 "entry_price": entry_price,
                 "qty": qty,
+                "used_krw": used_krw,
                 "stop_loss_pct": stop_loss_pct,
                 "take_profit_pct": take_profit_pct,
                 "time_stop_sec": time_stop_sec,
@@ -1263,6 +1359,8 @@ def should_auto_buy_signal(signal):
 
     if strategy not in ["EARLY", "PRE_BREAKOUT", "BREAKOUT", "CHASE"]:
         return False
+    if strategy == "CHASE" and not ALLOW_CHASE:
+        return False
     if tp < MIN_EXPECTED_TP_PCT:
         return False
     if edge < MIN_EXPECTED_EDGE_SCORE:
@@ -1277,20 +1375,13 @@ def cooldown_ok(ticker):
 # 후보 알림
 # =========================
 def scan_watchlist():
-    global recent_watch_alerts
-
-    try:
-        tickers = pybithumb.get_tickers()
-    except Exception as e:
-        print(f"[후보 감지 오류] {e}")
+    cache = build_market_cache()
+    if not cache:
         return
 
     results = []
 
-    for ticker in tickers[:TOP_TICKERS]:
-        if ticker == "BTC":
-            continue
-
+    for ticker, data in cache.items():
         for analyzer in [
             analyze_early_entry,
             analyze_pre_breakout_entry,
@@ -1298,15 +1389,27 @@ def scan_watchlist():
             analyze_prepump_entry,
             analyze_pullback_entry,
         ]:
-            signal = analyzer(ticker)
-            if signal:
-                results.append(signal)
+            try:
+                signal = analyzer(ticker, data)
+                if signal:
+                    results.append(signal)
+            except Exception:
+                continue
 
     if not results:
         return
 
-    results.sort(key=lambda x: float(x.get("signal_score", 0)), reverse=True)
-    top = results[:5]
+    # 같은 티커는 최고 점수 1개만 남김
+    best_per_ticker = {}
+    for signal in results:
+        t = signal["ticker"]
+        s = float(signal.get("signal_score", 0))
+        if t not in best_per_ticker or s > float(best_per_ticker[t].get("signal_score", 0)):
+            best_per_ticker[t] = signal
+
+    unique_results = list(best_per_ticker.values())
+    unique_results.sort(key=lambda x: float(x.get("signal_score", 0)), reverse=True)
+    top = unique_results[:5]
 
     lines = []
     now_ts = time.time()
@@ -1343,10 +1446,8 @@ def scan_and_auto_trade():
         print(f"[시장 차단] {market_msg}")
         return
 
-    try:
-        tickers = pybithumb.get_tickers()
-    except Exception as e:
-        print(f"[티커 조회 오류] {e}")
+    cache = build_market_cache()
+    if not cache:
         return
 
     candidates = []
@@ -1358,14 +1459,14 @@ def scan_and_auto_trade():
         analyze_chase_entry,
     ]
 
-    for ticker in tickers[:TOP_TICKERS]:
-        if ticker == "BTC":
-            continue
-
+    for ticker, data in cache.items():
         for analyzer in analyzers:
-            signal = analyzer(ticker)
-            if signal and should_auto_buy_signal(signal):
-                candidates.append(signal)
+            try:
+                signal = analyzer(ticker, data)
+                if signal and should_auto_buy_signal(signal):
+                    candidates.append(signal)
+            except Exception:
+                continue
 
     if not candidates:
         return
@@ -1401,7 +1502,7 @@ def scan_and_auto_trade():
 📊 {ticker}
 방식: {best['strategy_label']}
 
-💰 매수가: {fmt_price(result['entry'])}
+💰 매수가(보정): {fmt_price(result['entry'])}
 📦 수량: {result['qty']:.6f}
 💵 사용한 금액(대략): {fmt_price(result['used_krw'])}
 
@@ -1429,6 +1530,9 @@ def monitor_positions():
             market_value = balance * current_price
 
             if balance <= 0:
+                # pending sell이 있으면 나중에 보정
+                if ticker in pending_sells:
+                    continue
                 active_positions.pop(ticker, None)
                 save_positions()
                 clear_position_file_if_empty()
@@ -1445,7 +1549,7 @@ def monitor_positions():
             tp_price = entry_price * (1 + pos["take_profit_pct"] / 100)
             held_sec = int(time.time() - int(pos["entered_at"]))
 
-            # 5천원 미만은 유지
+            # 5천원 미만은 매도 불가 대기
             if market_value < MIN_ORDER_KRW:
                 continue
 
@@ -1471,7 +1575,7 @@ def monitor_positions():
                     else:
                         send(
                             f"""
-⚠️ 정리 시도했지만 확인 실패
+⚠️ 정리 시도했지만 확인 지연
 
 📊 {ticker}
 방식: {pos['strategy_label']}
@@ -1500,7 +1604,7 @@ def monitor_positions():
                 else:
                     send(
                         f"""
-⚠️ 손절 시도했지만 확인 실패
+⚠️ 손절 시도했지만 확인 지연
 
 📊 {ticker}
 방식: {pos['strategy_label']}
@@ -1536,7 +1640,7 @@ def monitor_positions():
                     else:
                         send(
                             f"""
-⚠️ 본절 정리 시도했지만 확인 실패
+⚠️ 본절 정리 시도했지만 확인 지연
 
 📊 {ticker}
 방식: {pos['strategy_label']}
@@ -1574,7 +1678,7 @@ def monitor_positions():
                     else:
                         send(
                             f"""
-⚠️ 익절 시도했지만 확인 실패
+⚠️ 익절 시도했지만 확인 지연
 
 📊 {ticker}
 방식: {pos['strategy_label']}
@@ -1603,7 +1707,7 @@ def monitor_positions():
                 else:
                     send(
                         f"""
-⚠️ 익절 시도했지만 확인 실패
+⚠️ 익절 시도했지만 확인 지연
 
 📊 {ticker}
 방식: {pos['strategy_label']}
@@ -1619,77 +1723,121 @@ def monitor_positions():
             traceback.print_exc()
 
 # =========================
+# 통계
+# =========================
+CLOSE_TYPES = {"TP", "STOP", "TRAIL_TP", "BREAKEVEN", "TIME_STOP"}
+
+def get_closed_logs_all():
+    return [x for x in trade_logs if x.get("type") in CLOSE_TYPES]
+
+def get_closed_logs_today():
+    tz = ZoneInfo(TIMEZONE)
+    today = datetime.now(tz).date()
+    result = []
+    for x in trade_logs:
+        if x.get("type") not in CLOSE_TYPES:
+            continue
+        ts = int(x.get("time", 0))
+        d = datetime.fromtimestamp(ts, tz).date()
+        if d == today:
+            result.append(x)
+    return result
+
+def summarize_logs(logs):
+    if not logs:
+        return None
+    total = len(logs)
+    wins = len([x for x in logs if float(x.get("pnl_pct", 0)) > 0])
+    losses = total - wins
+    total_pnl = sum(float(x.get("pnl_pct", 0)) for x in logs)
+    avg_pnl = total_pnl / total if total > 0 else 0.0
+    return {
+        "total": total,
+        "wins": wins,
+        "losses": losses,
+        "win_rate": (wins / total) * 100 if total > 0 else 0,
+        "total_pnl": total_pnl,
+        "avg_pnl": avg_pnl,
+    }
+
+def summarize_by_strategy(logs):
+    bucket = {}
+    for x in logs:
+        strategy = x.get("strategy", "UNKNOWN")
+        bucket.setdefault(strategy, []).append(x)
+
+    lines = []
+    for strategy, items in sorted(bucket.items(), key=lambda kv: len(kv[1]), reverse=True):
+        info = summarize_logs(items)
+        lines.append(
+            f"{strategy}\n- 거래: {info['total']}\n- 승률: {info['win_rate']:.2f}%\n- 평균: {info['avg_pnl']:.2f}%\n- 누적: {info['total_pnl']:.2f}%"
+        )
+    return lines
+
+# =========================
 # 명령어
 # =========================
 def summary_command(update, context: CallbackContext):
-    closes = [x for x in trade_logs if x.get("type") in ["TP", "STOP", "TRAIL_TP", "BREAKEVEN", "TIME_STOP"]]
-    if not closes:
+    closes = get_closed_logs_all()
+    info = summarize_logs(closes)
+    if not info:
         send("📊 아직 종료된 거래가 없어")
         return
-
-    total = len(closes)
-    wins = len([x for x in closes if float(x.get("pnl_pct", 0)) > 0])
-    losses = len([x for x in closes if float(x.get("pnl_pct", 0)) <= 0])
-    total_pnl = sum(float(x.get("pnl_pct", 0)) for x in closes)
-    avg_pnl = total_pnl / total if total > 0 else 0
 
     send(
         f"""
 📊 거래 요약
 
-총 종료 거래: {total}
-익절/플러스 종료: {wins}
-손절/마이너스 종료: {losses}
-승률: {(wins / total) * 100:.2f}%
-누적 수익률: {total_pnl:.2f}%
-평균 수익률: {avg_pnl:.2f}%
+총 종료 거래: {info['total']}
+익절/플러스 종료: {info['wins']}
+손절/마이너스 종료: {info['losses']}
+승률: {info['win_rate']:.2f}%
+누적 수익률: {info['total_pnl']:.2f}%
+평균 수익률: {info['avg_pnl']:.2f}%
 """
     )
 
 def today_command(update, context: CallbackContext):
-    tz = ZoneInfo(TIMEZONE)
-    today = datetime.now(tz).date()
-    closed_types = {"TP", "STOP", "TRAIL_TP", "BREAKEVEN", "TIME_STOP"}
-
-    today_closes = []
-    for x in trade_logs:
-        if x.get("type") not in closed_types:
-            continue
-        ts = int(x.get("time", 0))
-        d = datetime.fromtimestamp(ts, tz).date()
-        if d == today:
-            today_closes.append(x)
-
-    if not today_closes:
+    today_closes = get_closed_logs_today()
+    info = summarize_logs(today_closes)
+    if not info:
         send("📊 오늘 종료된 거래가 아직 없어")
         return
 
-    total = len(today_closes)
-    wins = len([x for x in today_closes if float(x.get("pnl_pct", 0)) > 0])
-    losses = total - wins
-    total_pnl = sum(float(x.get("pnl_pct", 0)) for x in today_closes)
-    avg_pnl = total_pnl / total if total > 0 else 0.0
-
     lines = []
     for x in today_closes[-10:]:
-        lines.append(
-            f"• {x.get('ticker','?')} / {x.get('type')} / {float(x.get('pnl_pct',0)):.2f}%"
-        )
+        lines.append(f"• {x.get('ticker','?')} / {x.get('type')} / {float(x.get('pnl_pct',0)):.2f}%")
 
     send(
         f"""
 📊 오늘 거래 요약
 
-총 종료 거래: {total}
-익절/플러스 종료: {wins}
-손절/마이너스 종료: {losses}
-승률: {(wins / total) * 100:.2f}%
-누적 수익률: {total_pnl:.2f}%
-평균 수익률: {avg_pnl:.2f}%
+총 종료 거래: {info['total']}
+익절/플러스 종료: {info['wins']}
+손절/마이너스 종료: {info['losses']}
+승률: {info['win_rate']:.2f}%
+누적 수익률: {info['total_pnl']:.2f}%
+평균 수익률: {info['avg_pnl']:.2f}%
 
 최근 종료 거래
 """ + "\n".join(lines)
     )
+
+def summary_strategy_command(update, context: CallbackContext):
+    closes = get_closed_logs_all()
+    if not closes:
+        send("📊 아직 종료된 거래가 없어")
+        return
+    lines = summarize_by_strategy(closes)
+    send("📊 전략별 전체 결과\n\n" + "\n\n".join(lines))
+
+def today_strategy_command(update, context: CallbackContext):
+    closes = get_closed_logs_today()
+    if not closes:
+        send("📊 오늘 종료된 거래가 아직 없어")
+        return
+    lines = summarize_by_strategy(closes)
+    send("📊 전략별 오늘 결과\n\n" + "\n\n".join(lines))
 
 def btc_command(update, context: CallbackContext):
     send(analyze_btc_flow())
@@ -1707,9 +1855,20 @@ def status_command(update, context: CallbackContext):
         pnl = ((price - entry) / entry) * 100 if entry > 0 and price > 0 else 0
         held_min = int((time.time() - int(pos["entered_at"])) / 60)
         value = qty * price if price > 0 else 0
-        lines.append(
-            f"• {ticker} / 방식 {pos['strategy_label']} / 진입 {fmt_price(entry)} / 현재 {fmt_price(price)} / 수익률 {fmt_pct(pnl)} / 평가금액 {fmt_price(value)} / 보유 {held_min}분 / 기대점수 {pos.get('edge_score', 0):.2f}"
-        )
+
+        if value < MIN_ORDER_KRW:
+            lines.append(
+                f"• {ticker} / 방식 {pos['strategy_label']} / 진입 {fmt_price(entry)} / 현재 {fmt_price(price)} / 수익률 {fmt_pct(pnl)} / 평가금액 {fmt_price(value)} / 상태 소액포지션 대기중 / 보유 {held_min}분 / 기대점수 {pos.get('edge_score', 0):.2f}"
+            )
+        else:
+            lines.append(
+                f"• {ticker} / 방식 {pos['strategy_label']} / 진입 {fmt_price(entry)} / 현재 {fmt_price(price)} / 수익률 {fmt_pct(pnl)} / 평가금액 {fmt_price(value)} / 보유 {held_min}분 / 기대점수 {pos.get('edge_score', 0):.2f}"
+            )
+
+    if pending_sells:
+        lines.append("\n⚠️ 매도 확인 대기중")
+        for ticker in pending_sells.keys():
+            lines.append(f"• {ticker}")
 
     send("📌 현재 포지션\n\n" + "\n".join(lines))
 
@@ -1720,6 +1879,8 @@ updater = Updater(token=TELEGRAM_TOKEN, use_context=True)
 dispatcher = updater.dispatcher
 dispatcher.add_handler(CommandHandler("summary", summary_command))
 dispatcher.add_handler(CommandHandler("today", today_command))
+dispatcher.add_handler(CommandHandler("summary_strategy", summary_strategy_command))
+dispatcher.add_handler(CommandHandler("today_strategy", today_strategy_command))
 dispatcher.add_handler(CommandHandler("btc", btc_command))
 dispatcher.add_handler(CommandHandler("status", status_command))
 
@@ -1729,8 +1890,10 @@ updater.start_polling(drop_pending_updates=True)
 # 시작 시 복구
 # =========================
 load_positions()
+load_pending_sells()
 recover_positions_from_exchange()
 save_positions()
+save_pending_sells()
 send_startup_message()
 
 print(f"🚀 {BOT_VERSION} 실행 / {TIMEZONE}")
@@ -1754,6 +1917,7 @@ while True:
 
     if now_ts - last_position_check >= POSITION_CHECK_INTERVAL:
         try:
+            check_pending_sells()
             monitor_positions()
         except Exception as e:
             print(f"[포지션 감시 오류] {e}")
@@ -1769,7 +1933,7 @@ while True:
 
     if now_ts - last_status_report_time >= STATUS_REPORT_INTERVAL:
         try:
-            if active_positions:
+            if active_positions or pending_sells:
                 status_command(None, None)
         except Exception as e:
             print(f"[상태 리포트 오류] {e}")
