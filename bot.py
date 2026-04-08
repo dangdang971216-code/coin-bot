@@ -13,7 +13,7 @@ from telegram.ext import Updater, CommandHandler, CallbackContext
 # =========================================================
 # 버전
 # =========================================================
-BOT_VERSION = "수익형 v6.5.5a"
+BOT_VERSION = "수익형 v6.5.5b"
 
 # =========================================================
 # 환경변수
@@ -169,11 +169,14 @@ TREND_CONT_CFG = {
     "trend_change_max": 9.50,
     "pullback_max": 2.20,
     "recovery_min": 0.35,
+    "recovery_max": 1.45,
+    "last1_change_max": 0.90,
     "vol_reaccel_min": 1.45,
     "rsi_min": 50,
     "rsi_max": 74,
+    "high_retest_gap_min": 0.12,
     "high_retest_gap_max": 0.80,
-    "extension_max": 0.75,
+    "extension_max": 0.18,
 }
 
 # PREPUMP 후보 저장용
@@ -366,7 +369,8 @@ def send_startup_message():
 - 눌림 반등형
 
 v6.5.5a 핵심:
-- 추세 지속형 전략 추가
+- 추세 지속형 전략 유지
+- 추세 지속형 고점 근접 진입 보정
 - 강한 주도주 눌림 후 재가속 탐지
 - 기존 초반형/직전형 유지
 - 좋은 상승 시작형은 2차확인 후보 허용
@@ -1465,9 +1469,10 @@ def analyze_trend_cont_entry(ticker: str, data: dict):
     if trend_change_pct < TREND_CONT_CFG["trend_change_min"] or trend_change_pct > TREND_CONT_CFG["trend_change_max"]:
         return None
 
-    recent8 = df.tail(8)
-    recent_high = float(recent8["high"].max())
-    recent_low = float(recent8["low"].min())
+    recent9 = df.tail(9)
+    prior8 = recent9.iloc[:-1] if len(recent9) >= 2 else recent9
+    recent_high = float(prior8["high"].max())
+    recent_low = float(prior8["low"].min())
     if recent_high <= 0 or recent_low <= 0:
         return None
 
@@ -1476,11 +1481,15 @@ def analyze_trend_cont_entry(ticker: str, data: dict):
         return None
 
     recovery_pct = get_recent_change_pct(df, 3)
-    if recovery_pct < TREND_CONT_CFG["recovery_min"]:
+    if recovery_pct < TREND_CONT_CFG["recovery_min"] or recovery_pct > TREND_CONT_CFG["recovery_max"]:
+        return None
+
+    last1_change_pct = get_recent_change_pct(df, 1)
+    if last1_change_pct > TREND_CONT_CFG["last1_change_max"]:
         return None
 
     retest_gap_pct = ((recent_high - current_price) / current_price) * 100
-    if retest_gap_pct < 0 or retest_gap_pct > TREND_CONT_CFG["high_retest_gap_max"]:
+    if retest_gap_pct < TREND_CONT_CFG["high_retest_gap_min"] or retest_gap_pct > TREND_CONT_CFG["high_retest_gap_max"]:
         return None
 
     extension_pct = ((current_price - recent_high) / recent_high) * 100
@@ -1503,7 +1512,7 @@ def analyze_trend_cont_entry(ticker: str, data: dict):
     if low_last5 < low_prev5 * 0.992:
         return None
 
-    base_score_v = 6.0 + min(vol_ratio, 4.2) * 0.75 + min(trend_change_pct, 7.0) * 0.28 + min(recovery_pct, 1.5) * 0.9
+    base_score_v = 6.0 + min(vol_ratio, 4.2) * 0.75 + min(trend_change_pct, 7.0) * 0.28 + min(recovery_pct, 1.2) * 0.8
     base_score_v += pattern_bonus_score(pattern_info)
 
     stop_loss_pct = dynamic_stop_loss_pct(vol_ratio, get_range_pct(df, 10), "TREND_CONT")
@@ -1533,11 +1542,13 @@ def analyze_trend_cont_entry(ticker: str, data: dict):
             f"- 오늘 강한 흐름이 이어지는 코인이야\n"
             f"- 잠깐 눌렸다가 다시 위로 가려는 모습이 보여\n"
             f"- 거래량 재가속 {vol_ratio:.2f}배\n"
-            f"- 직전 고점 재도전 거리 {retest_gap_pct:.2f}%\n"
+            f"- 직전 고점까지 남은 거리 {retest_gap_pct:.2f}%\n"
+            f"- 마지막 1봉 상승 {last1_change_pct:.2f}%\n"
             f"- RSI {rsi:.2f}"
             f"{pattern_reason_suffix(pattern_info)}"
         ),
     )
+
 
 
 def analyze_pre_breakout_entry(ticker: str, data: dict):
