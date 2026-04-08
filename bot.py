@@ -13,7 +13,7 @@ from telegram.ext import Updater, CommandHandler, CallbackContext
 # =========================
 # 버전
 # =========================
-BOT_VERSION = "수익형 v6.1"
+BOT_VERSION = "수익형 v6.2"
 
 # =========================
 # 환경변수
@@ -30,7 +30,7 @@ bot = Bot(token=TELEGRAM_TOKEN)
 bithumb = pybithumb.Bithumb(API_KEY, API_SECRET)
 
 # =========================
-# 파일
+# 파일 / 시간
 # =========================
 TIMEZONE = "Asia/Seoul"
 LOG_FILE = "trade_log.json"
@@ -38,16 +38,26 @@ POSITIONS_FILE = "active_positions.json"
 PENDING_SELLS_FILE = "pending_sells.json"
 
 # =========================
-# 기본 설정
+# 실행 주기
 # =========================
 SCAN_INTERVAL = 8
 POSITION_CHECK_INTERVAL = 4
 LOOP_SLEEP = 1
 
-TOP_TICKERS = 120
+# =========================
+# 시장 캐시 / 유니버스
+# =========================
+TOP_TICKERS = 80
+ABSOLUTE_TURNOVER_CANDIDATES = 45
+SURGE_CANDIDATES = 55
+UNIVERSE_REFRESH_SEC = 18
+MARKET_CACHE_TTL_SEC = 8
+
+# =========================
+# 주문 / 자금
+# =========================
 MIN_ORDER_KRW = 5000
 DUST_KEEP_MIN_KRW = 100
-
 MAX_ENTRY_KRW = 10000
 KRW_USE_RATIO = 0.88
 ORDER_BUFFER_KRW = 500
@@ -85,7 +95,7 @@ BREAKEVEN_BUFFER_PCT = 0.15
 TIME_STOP_MIN_SEC = 480
 TIME_STOP_MAX_SEC = 1080
 
-MIN_EXPECTED_EDGE_SCORE = 6.8
+MIN_EXPECTED_EDGE_SCORE = 7.4
 MIN_EXPECTED_TP_PCT = 3.2
 
 # =========================
@@ -166,6 +176,14 @@ recent_watch_alerts = {}
 pending_sells = {}
 
 # =========================
+# 공유 캐시
+# =========================
+shared_market_cache = {}
+shared_market_cache_time = 0
+market_universe = []
+market_universe_time = 0
+
+# =========================
 # 유틸
 # =========================
 def now_kst():
@@ -238,12 +256,13 @@ def send_startup_message():
 - 상승 시작형
 - 눌림 반등형
 
-개선 포함:
-- API 캐시
-- 거래량 상위 종목 스캔
-- 후보 중복 제거
-- 전략별 통계
-- 매도 실패 재확인
+v6.2 개선:
+- 진짜 공유 캐시
+- 거래량 급증 기반 후보 선별
+- edge_score 재설계
+- 복구 안전성 강화
+- 매도 exit 보정
+- dust 포지션 표시 강화
 
 명령어:
 - /status
@@ -256,7 +275,7 @@ def send_startup_message():
     )
 
 # =========================
-# 로그
+# 파일 I/O
 # =========================
 def load_json_file(path, default):
     if not os.path.exists(path):
@@ -283,9 +302,6 @@ def add_log(item: dict):
     trade_logs.append(item)
     save_logs()
 
-# =========================
-# 포지션 / pending sells
-# =========================
 def save_positions():
     save_json_file(POSITIONS_FILE, active_positions)
 
@@ -524,58 +540,7 @@ def analyze_btc_flow():
 """
 
 # =========================
-# 캐시 / 상위 종목
-# =========================
-def get_top_volume_tickers():
-    try:
-        tickers = pybithumb.get_tickers()
-    except Exception as e:
-        print(f"[티커 조회 오류] {e}")
-        return []
-
-    rows = []
-    for ticker in tickers:
-        if ticker == "BTC":
-            continue
-        try:
-            df3 = get_ohlcv(ticker, "minute3")
-            if df3 is None or len(df3) < 20:
-                continue
-            price = get_price(ticker)
-            if price <= 0:
-                continue
-            vol_sum = float(df3["volume"].tail(5).sum())
-            amount = vol_sum * price
-            rows.append((ticker, amount, df3))
-        except Exception:
-            continue
-
-    rows.sort(key=lambda x: x[1], reverse=True)
-    return rows[:TOP_TICKERS]
-
-def build_market_cache():
-    cache = {}
-    top_rows = get_top_volume_tickers()
-
-    for ticker, amount, df3 in top_rows:
-        try:
-            price = get_price(ticker)
-            df1 = get_ohlcv(ticker, "minute1")
-            if price <= 0 or df1 is None or len(df1) < 30:
-                continue
-            cache[ticker] = {
-                "price": price,
-                "df_1m": df1,
-                "df_3m": df3,
-                "turnover": amount,
-            }
-        except Exception:
-            continue
-
-    return cache
-
-# =========================
-# 점수/리스크
+# 점수 / 리스크
 # =========================
 def dynamic_stop_loss_pct(vol_ratio, range_pct, strategy):
     stop = BASE_STOP_LOSS_PCT
@@ -596,18 +561,20 @@ def dynamic_take_profit_pct(vol_ratio, range_pct, strategy):
     tp = BASE_TP_PCT
 
     if strategy == "EARLY":
-        tp += 0.4
+        tp += 0.5
     elif strategy == "PRE_BREAKOUT":
-        tp += 0.6
+        tp += 0.7
     elif strategy == "BREAKOUT":
         tp += 0.8
     elif strategy == "CHASE":
-        tp += 0.9
+        tp += 0.7
 
     if vol_ratio >= 4.0:
         tp += 0.3
+    if range_pct >= 3.5:
+        tp += 0.2
 
-    return min(tp, 6.6)
+    return min(tp, 6.8)
 
 def dynamic_time_stop_sec(vol_ratio, range_pct, strategy):
     if strategy == "EARLY":
@@ -628,13 +595,165 @@ def dynamic_time_stop_sec(vol_ratio, range_pct, strategy):
 
     return max(TIME_STOP_MIN_SEC, min(base, TIME_STOP_MAX_SEC))
 
-def expected_edge_score(stop_loss_pct, take_profit_pct, base_score):
+def score_heat_penalty(rsi):
+    if rsi >= 74:
+        return 1.3
+    if rsi >= 70:
+        return 0.9
+    if rsi >= 66:
+        return 0.5
+    return 0.0
+
+def score_entry_bonus(strategy):
+    if strategy == "EARLY":
+        return 1.15
+    if strategy == "PRE_BREAKOUT":
+        return 1.05
+    if strategy == "BREAKOUT":
+        return 0.65
+    if strategy == "CHASE":
+        return -0.95
+    return 0.0
+
+def expected_edge_score(strategy, base_signal_score, stop_loss_pct, take_profit_pct, rsi, vol_ratio, change_pct, range_pct):
     risk = abs(float(stop_loss_pct))
     reward = float(take_profit_pct)
     if risk <= 0:
         return -999
+
     rr = reward / risk
-    return base_score + (rr * 1.4)
+
+    score = float(base_signal_score)
+    score += min(rr, 3.8) * 0.95
+    score += min(vol_ratio, 4.5) * 0.32
+    score += min(range_pct, 3.5) * 0.18
+    score += score_entry_bonus(strategy)
+    score -= score_heat_penalty(rsi)
+
+    if strategy in ["EARLY", "PRE_BREAKOUT"] and change_pct <= 1.6:
+        score += 0.45
+    if strategy == "BREAKOUT" and change_pct >= 3.2:
+        score -= 0.5
+    if strategy == "CHASE" and change_pct >= 3.0:
+        score -= 0.7
+
+    return round(score, 2)
+
+# =========================
+# 시장 유니버스 / 공유 캐시
+# =========================
+def get_market_universe(force=False):
+    global market_universe, market_universe_time
+
+    now_ts = time.time()
+    if (not force) and market_universe and (now_ts - market_universe_time < UNIVERSE_REFRESH_SEC):
+        return market_universe
+
+    try:
+        tickers = pybithumb.get_tickers()
+    except Exception as e:
+        print(f"[티커 조회 오류] {e}")
+        return market_universe
+
+    rows = []
+
+    for ticker in tickers:
+        if ticker == "BTC":
+            continue
+
+        try:
+            df3 = get_ohlcv(ticker, "minute3")
+            if df3 is None or len(df3) < 30:
+                continue
+
+            price = safe_float(df3["close"].iloc[-1], 0)
+            if price <= 0:
+                continue
+
+            vol_ratio = get_vol_ratio(df3, 3, 15)
+            short_change = get_recent_change_pct(df3, 3)
+            range_pct = get_range_pct(df3, 8)
+
+            turnover_recent = float(df3["volume"].tail(5).sum()) * price
+            turnover_score = math.log10(max(turnover_recent, 1))
+            surge_score = min(vol_ratio, 7.0) * 1.8 + min(max(short_change, 0), 4.5) * 1.4 + min(range_pct, 5.0) * 0.7
+
+            rows.append({
+                "ticker": ticker,
+                "df_3m": df3,
+                "last_price": price,
+                "turnover_recent": turnover_recent,
+                "vol_ratio_3m": vol_ratio,
+                "short_change_3m": short_change,
+                "range_pct_3m": range_pct,
+                "turnover_score": turnover_score,
+                "surge_score": surge_score,
+            })
+        except Exception:
+            continue
+
+    if not rows:
+        return market_universe
+
+    abs_sorted = sorted(rows, key=lambda x: x["turnover_recent"], reverse=True)[:ABSOLUTE_TURNOVER_CANDIDATES]
+    surge_sorted = sorted(rows, key=lambda x: x["surge_score"], reverse=True)[:SURGE_CANDIDATES]
+
+    merged = {}
+    for item in abs_sorted + surge_sorted:
+        merged[item["ticker"]] = item
+
+    selected = list(merged.values())
+    selected.sort(key=lambda x: (x["surge_score"] * 1.15) + (x["turnover_score"] * 0.35), reverse=True)
+    selected = selected[:TOP_TICKERS]
+
+    market_universe = selected
+    market_universe_time = now_ts
+    return market_universe
+
+def build_shared_market_cache(force=False):
+    global shared_market_cache, shared_market_cache_time
+
+    now_ts = time.time()
+    if (not force) and shared_market_cache and (now_ts - shared_market_cache_time < MARKET_CACHE_TTL_SEC):
+        return shared_market_cache
+
+    universe = get_market_universe(force=force)
+    if not universe:
+        return shared_market_cache
+
+    cache = {}
+
+    for row in universe:
+        ticker = row["ticker"]
+        try:
+            df1 = get_ohlcv(ticker, "minute1")
+            if df1 is None or len(df1) < 35:
+                continue
+
+            price = safe_float(df1["close"].iloc[-1], 0)
+            if price <= 0:
+                price = row["last_price"]
+            if price <= 0:
+                continue
+
+            cache[ticker] = {
+                "price": price,
+                "df_1m": df1,
+                "df_3m": row["df_3m"],
+                "turnover": row["turnover_recent"],
+                "surge_score": row["surge_score"],
+                "vol_ratio_3m": row["vol_ratio_3m"],
+                "short_change_3m": row["short_change_3m"],
+                "range_pct_3m": row["range_pct_3m"],
+            }
+        except Exception:
+            continue
+
+    if cache:
+        shared_market_cache = cache
+        shared_market_cache_time = now_ts
+
+    return shared_market_cache
 
 # =========================
 # 공용 필터
@@ -699,11 +818,11 @@ def analyze_early_entry(ticker: str, data: dict):
     if last_jump_pct < 0.10:
         return None
 
-    score = 6.5 + min(vol_ratio, 4.5) + min(change_pct, 2.8) * 0.9
+    base_score = 5.8 + min(vol_ratio, 4.2) * 0.9 + min(change_pct, 2.4) * 0.8 + min(data.get("surge_score", 0), 8) * 0.18
     stop_loss_pct = dynamic_stop_loss_pct(vol_ratio, range_pct, "EARLY")
     take_profit_pct = dynamic_take_profit_pct(vol_ratio, range_pct, "EARLY")
     time_stop_sec = dynamic_time_stop_sec(vol_ratio, range_pct, "EARLY")
-    edge_score = expected_edge_score(stop_loss_pct, take_profit_pct, score)
+    edge_score = expected_edge_score("EARLY", base_score, stop_loss_pct, take_profit_pct, rsi, vol_ratio, change_pct, range_pct)
 
     return {
         "ticker": ticker,
@@ -714,7 +833,7 @@ def analyze_early_entry(ticker: str, data: dict):
         "change_pct": r(change_pct, 2),
         "rsi": r(rsi, 2),
         "range_pct": r(range_pct, 2),
-        "signal_score": r(score, 2),
+        "signal_score": r(base_score, 2),
         "edge_score": r(edge_score, 2),
         "stop_loss_pct": stop_loss_pct,
         "take_profit_pct": take_profit_pct,
@@ -724,7 +843,7 @@ def analyze_early_entry(ticker: str, data: dict):
             f"- 거래량 {vol_ratio:.2f}배\n"
             f"- 최근 상승 {change_pct:.2f}%\n"
             f"- RSI {rsi:.2f}\n"
-            f"- 단기 흐름이 위쪽이야"
+            f"- 초입 흐름이 살아있어"
         )
     }
 
@@ -755,7 +874,7 @@ def analyze_prepump_entry(ticker: str, data: dict):
     if upper_wick_too_large(df):
         return None
 
-    score = 5.0 + min(vol_ratio, 4.0)
+    score = 4.9 + min(vol_ratio, 4.0) * 0.8 + min(data.get("surge_score", 0), 8) * 0.12
 
     return {
         "ticker": ticker,
@@ -808,7 +927,7 @@ def analyze_pullback_entry(ticker: str, data: dict):
         "current_price": current_price,
         "vol_ratio": r(vol_ratio, 2),
         "change_pct": r(rebound_pct, 2),
-        "signal_score": r(4.8 + vol_ratio, 2),
+        "signal_score": r(4.8 + vol_ratio * 0.8, 2),
     }
 
 def analyze_pre_breakout_entry(ticker: str, data: dict):
@@ -859,11 +978,11 @@ def analyze_pre_breakout_entry(ticker: str, data: dict):
     if last_jump_pct < 0.15:
         return None
 
-    score = 6.8 + min(vol_ratio, 4.5) + (PRE_BREAKOUT_MAX_GAP_PCT - gap_to_break) * 4.0
+    base_score = 6.0 + min(vol_ratio, 4.5) * 0.85 + (PRE_BREAKOUT_MAX_GAP_PCT - gap_to_break) * 3.4 + min(data.get("surge_score", 0), 8) * 0.16
     stop_loss_pct = dynamic_stop_loss_pct(vol_ratio, range_pct, "PRE_BREAKOUT")
     take_profit_pct = dynamic_take_profit_pct(vol_ratio, range_pct, "PRE_BREAKOUT")
     time_stop_sec = dynamic_time_stop_sec(vol_ratio, range_pct, "PRE_BREAKOUT")
-    edge_score = expected_edge_score(stop_loss_pct, take_profit_pct, score)
+    edge_score = expected_edge_score("PRE_BREAKOUT", base_score, stop_loss_pct, take_profit_pct, rsi, vol_ratio, change_pct, range_pct)
 
     return {
         "ticker": ticker,
@@ -875,7 +994,7 @@ def analyze_pre_breakout_entry(ticker: str, data: dict):
         "rsi": r(rsi, 2),
         "range_pct": r(range_pct, 2),
         "gap_to_break": r(gap_to_break, 2),
-        "signal_score": r(score, 2),
+        "signal_score": r(base_score, 2),
         "edge_score": r(edge_score, 2),
         "stop_loss_pct": stop_loss_pct,
         "take_profit_pct": take_profit_pct,
@@ -935,11 +1054,11 @@ def analyze_breakout_entry(ticker: str, data: dict):
     if break_pct < BREAKOUT_BREAK_PCT:
         return None
 
-    score = 7.0 + min(vol_ratio, 5.0) + min(change_pct, 4.0) * 0.9 + min(break_pct, 1.0) * 2.0
+    base_score = 6.1 + min(vol_ratio, 5.0) * 0.82 + min(change_pct, 4.0) * 0.7 + min(break_pct, 1.0) * 1.5 + min(data.get("surge_score", 0), 8) * 0.14
     stop_loss_pct = dynamic_stop_loss_pct(vol_ratio, range_pct, "BREAKOUT")
     take_profit_pct = dynamic_take_profit_pct(vol_ratio, range_pct, "BREAKOUT")
     time_stop_sec = dynamic_time_stop_sec(vol_ratio, range_pct, "BREAKOUT")
-    edge_score = expected_edge_score(stop_loss_pct, take_profit_pct, score)
+    edge_score = expected_edge_score("BREAKOUT", base_score, stop_loss_pct, take_profit_pct, rsi, vol_ratio, change_pct, range_pct)
 
     return {
         "ticker": ticker,
@@ -951,7 +1070,7 @@ def analyze_breakout_entry(ticker: str, data: dict):
         "rsi": r(rsi, 2),
         "range_pct": r(range_pct, 2),
         "break_pct": r(break_pct, 2),
-        "signal_score": r(score, 2),
+        "signal_score": r(base_score, 2),
         "edge_score": r(edge_score, 2),
         "stop_loss_pct": stop_loss_pct,
         "take_profit_pct": take_profit_pct,
@@ -1008,11 +1127,11 @@ def analyze_chase_entry(ticker: str, data: dict):
     if last_jump_pct < 0.35:
         return None
 
-    score = 7.2 + min(vol_ratio, 6.0) + min(change_pct, 3.8) * 0.9
+    base_score = 5.2 + min(vol_ratio, 6.0) * 0.70 + min(change_pct, 3.8) * 0.58 + min(data.get("surge_score", 0), 8) * 0.12
     stop_loss_pct = dynamic_stop_loss_pct(vol_ratio, range_pct, "CHASE")
     take_profit_pct = dynamic_take_profit_pct(vol_ratio, range_pct, "CHASE")
     time_stop_sec = dynamic_time_stop_sec(vol_ratio, range_pct, "CHASE")
-    edge_score = expected_edge_score(stop_loss_pct, take_profit_pct, score)
+    edge_score = expected_edge_score("CHASE", base_score, stop_loss_pct, take_profit_pct, rsi, vol_ratio, change_pct, range_pct)
 
     return {
         "ticker": ticker,
@@ -1023,7 +1142,7 @@ def analyze_chase_entry(ticker: str, data: dict):
         "change_pct": r(change_pct, 2),
         "rsi": r(rsi, 2),
         "range_pct": r(range_pct, 2),
-        "signal_score": r(score, 2),
+        "signal_score": r(base_score, 2),
         "edge_score": r(edge_score, 2),
         "stop_loss_pct": stop_loss_pct,
         "take_profit_pct": take_profit_pct,
@@ -1081,6 +1200,7 @@ def build_position(signal, filled_entry, filled_qty, used_krw):
         "trailing_armed": False,
         "reason": signal["reason"],
         "edge_score": signal.get("edge_score", 0),
+        "managed_by_bot": True,
     }
 
 def buy_market(signal):
@@ -1123,7 +1243,6 @@ def buy_market(signal):
                 last_error = f"체결 확인이 안 됐어 / 응답: {result}"
                 continue
 
-            # 실제 체결가에 가까운 값으로 보정
             if krw_used_real > 0:
                 filled_entry = krw_used_real / filled_qty
             else:
@@ -1146,6 +1265,7 @@ def buy_market(signal):
                 "time_stop_sec": signal["time_stop_sec"],
                 "edge_score": signal.get("edge_score"),
                 "reason": signal["reason"],
+                "managed_by_bot": True,
             })
 
             return True, {
@@ -1226,15 +1346,29 @@ def check_pending_sells():
 def sell_market_confirmed(ticker: str, reason_type: str, pos: dict, current_price: float, pnl_pct: float, held_sec: int = 0):
     try:
         before_balance = get_balance(ticker)
+        before_krw = get_krw_balance()
+
         if before_balance <= 0:
             return False, "잔고가 없어서 매도할 수 없었어"
 
         result = bithumb.sell_market_order(ticker, before_balance)
-        ok, _ = confirm_sell_filled(ticker, before_balance)
+        ok, after_balance = confirm_sell_filled(ticker, before_balance)
+
+        after_krw = get_krw_balance()
 
         if not ok:
             make_pending_sell_record(ticker, reason_type, pos, current_price, pnl_pct, held_sec)
             return False, f"매도 요청은 갔지만 체결 확인이 늦어졌어 / 응답: {result}"
+
+        sold_qty = max(before_balance - after_balance, 0)
+        krw_gained = max(after_krw - before_krw, 0)
+
+        if sold_qty > 0 and krw_gained > 0:
+            exit_price = krw_gained / sold_qty
+            pnl_pct_real = ((exit_price - float(pos["entry_price"])) / float(pos["entry_price"])) * 100
+        else:
+            exit_price = current_price
+            pnl_pct_real = pnl_pct
 
         add_log({
             "time": int(time.time()),
@@ -1243,8 +1377,8 @@ def sell_market_confirmed(ticker: str, reason_type: str, pos: dict, current_pric
             "strategy": pos["strategy"],
             "strategy_label": pos["strategy_label"],
             "entry": float(pos["entry_price"]),
-            "exit": current_price,
-            "pnl_pct": round(pnl_pct, 2),
+            "exit": exit_price,
+            "pnl_pct": round(pnl_pct_real, 2),
             "held_sec": int(held_sec),
             "edge_score": pos.get("edge_score", 0),
         })
@@ -1262,6 +1396,23 @@ def sell_market_confirmed(ticker: str, reason_type: str, pos: dict, current_pric
 # =========================
 # 포지션 복구
 # =========================
+def find_last_open_buy_log(ticker):
+    last_buy = None
+    last_close_time = 0
+
+    for log in trade_logs:
+        if log.get("ticker") != ticker:
+            continue
+        if log.get("type") == "BUY" and log.get("managed_by_bot", False):
+            if (last_buy is None) or int(log.get("time", 0)) > int(last_buy.get("time", 0)):
+                last_buy = log
+        elif log.get("type") in ["TP", "STOP", "TRAIL_TP", "BREAKEVEN", "TIME_STOP"]:
+            last_close_time = max(last_close_time, int(log.get("time", 0)))
+
+    if last_buy and int(last_buy.get("time", 0)) > last_close_time:
+        return last_buy
+    return None
+
 def recover_positions_from_exchange():
     global active_positions
 
@@ -1278,48 +1429,28 @@ def recover_positions_from_exchange():
 
     for ticker in tickers:
         try:
-            qty = get_balance(ticker)
-            price = get_price(ticker)
-            if qty <= 0 or price <= 0:
+            last_buy = find_last_open_buy_log(ticker)
+            if not last_buy:
                 continue
 
+            qty = get_balance(ticker)
+            price = get_price(ticker)
+
+            if qty <= 0 or price <= 0:
+                continue
             if qty * price < DUST_KEEP_MIN_KRW:
                 continue
 
-            last_buy = None
-            last_close_time = 0
-
-            for log in trade_logs:
-                if log.get("ticker") != ticker:
-                    continue
-                if log.get("type") == "BUY":
-                    if (last_buy is None) or int(log.get("time", 0)) > int(last_buy.get("time", 0)):
-                        last_buy = log
-                elif log.get("type") in ["TP", "STOP", "TRAIL_TP", "BREAKEVEN", "TIME_STOP"]:
-                    last_close_time = max(last_close_time, int(log.get("time", 0)))
-
-            if last_buy and int(last_buy.get("time", 0)) > last_close_time:
-                entry_price = float(last_buy.get("entry", price))
-                strategy = last_buy.get("strategy", "RECOVER")
-                strategy_label = last_buy.get("strategy_label", "복구 포지션")
-                stop_loss_pct = float(last_buy.get("stop_loss_pct", BASE_STOP_LOSS_PCT))
-                take_profit_pct = float(last_buy.get("take_profit_pct", BASE_TP_PCT))
-                time_stop_sec = int(last_buy.get("time_stop_sec", 900))
-                edge_score = float(last_buy.get("edge_score", 0))
-                reason = last_buy.get("reason", "이전 로그 기반 복구")
-                entered_at = int(last_buy.get("time", int(time.time())))
-                used_krw = float(last_buy.get("used_krw", 0))
-            else:
-                entry_price = price
-                strategy = "RECOVER"
-                strategy_label = "복구 포지션"
-                stop_loss_pct = BASE_STOP_LOSS_PCT
-                take_profit_pct = BASE_TP_PCT
-                time_stop_sec = 900
-                edge_score = 0
-                reason = "현재 잔고 기반 복구"
-                entered_at = int(time.time())
-                used_krw = qty * price
+            entry_price = float(last_buy.get("entry", price))
+            strategy = last_buy.get("strategy", "RECOVER")
+            strategy_label = last_buy.get("strategy_label", "복구 포지션")
+            stop_loss_pct = float(last_buy.get("stop_loss_pct", BASE_STOP_LOSS_PCT))
+            take_profit_pct = float(last_buy.get("take_profit_pct", BASE_TP_PCT))
+            time_stop_sec = int(last_buy.get("time_stop_sec", 900))
+            edge_score = float(last_buy.get("edge_score", 0))
+            reason = last_buy.get("reason", "이전 BUY 로그 기반 복구")
+            entered_at = int(last_buy.get("time", int(time.time())))
+            used_krw = float(last_buy.get("used_krw", qty * entry_price))
 
             active_positions[ticker] = {
                 "ticker": ticker,
@@ -1337,6 +1468,7 @@ def recover_positions_from_exchange():
                 "trailing_armed": False,
                 "reason": reason,
                 "edge_score": edge_score,
+                "managed_by_bot": True,
             }
             recovered += 1
         except Exception:
@@ -1344,13 +1476,13 @@ def recover_positions_from_exchange():
 
     if recovered > 0:
         save_positions()
-        send(f"♻️ 포지션 복구 완료\n복구된 코인 수: {recovered}")
+        send(f"♻️ 포지션 복구 완료\n최근 BUY 로그 기준으로 복구된 코인 수: {recovered}")
 
 # =========================
 # 시그널 평가
 # =========================
 def signal_score(signal):
-    return float(signal.get("edge_score", 0))
+    return float(signal.get("edge_score", signal.get("signal_score", 0)))
 
 def should_auto_buy_signal(signal):
     strategy = signal["strategy"]
@@ -1372,42 +1504,64 @@ def cooldown_ok(ticker):
     return (time.time() - last) >= 300
 
 # =========================
-# 후보 알림
+# 후보 추출
 # =========================
-def scan_watchlist():
-    cache = build_market_cache()
-    if not cache:
-        return
-
+def collect_signals_from_cache(cache, auto_only=False):
     results = []
 
+    auto_analyzers = [
+        analyze_early_entry,
+        analyze_pre_breakout_entry,
+        analyze_breakout_entry,
+        analyze_chase_entry,
+    ]
+
+    watch_analyzers = [
+        analyze_early_entry,
+        analyze_pre_breakout_entry,
+        analyze_breakout_entry,
+        analyze_prepump_entry,
+        analyze_pullback_entry,
+    ]
+
+    analyzers = auto_analyzers if auto_only else watch_analyzers
+
     for ticker, data in cache.items():
-        for analyzer in [
-            analyze_early_entry,
-            analyze_pre_breakout_entry,
-            analyze_breakout_entry,
-            analyze_prepump_entry,
-            analyze_pullback_entry,
-        ]:
+        for analyzer in analyzers:
             try:
                 signal = analyzer(ticker, data)
-                if signal:
-                    results.append(signal)
+                if not signal:
+                    continue
+                if auto_only and not should_auto_buy_signal(signal):
+                    continue
+                results.append(signal)
             except Exception:
                 continue
 
-    if not results:
-        return
+    return results
 
-    # 같은 티커는 최고 점수 1개만 남김
+def dedupe_best_signal_per_ticker(results, key_name="signal_score"):
     best_per_ticker = {}
     for signal in results:
         t = signal["ticker"]
-        s = float(signal.get("signal_score", 0))
-        if t not in best_per_ticker or s > float(best_per_ticker[t].get("signal_score", 0)):
+        s = float(signal.get(key_name, 0))
+        if t not in best_per_ticker or s > float(best_per_ticker[t].get(key_name, 0)):
             best_per_ticker[t] = signal
+    return list(best_per_ticker.values())
 
-    unique_results = list(best_per_ticker.values())
+# =========================
+# 후보 알림
+# =========================
+def scan_watchlist(shared_cache=None):
+    cache = shared_cache or build_shared_market_cache()
+    if not cache:
+        return
+
+    results = collect_signals_from_cache(cache, auto_only=False)
+    if not results:
+        return
+
+    unique_results = dedupe_best_signal_per_ticker(results, key_name="signal_score")
     unique_results.sort(key=lambda x: float(x.get("signal_score", 0)), reverse=True)
     top = unique_results[:5]
 
@@ -1433,7 +1587,7 @@ def scan_watchlist():
 # =========================
 # 자동 진입
 # =========================
-def scan_and_auto_trade():
+def scan_and_auto_trade(shared_cache=None):
     if not AUTO_BUY:
         return
     if not is_auto_time():
@@ -1446,31 +1600,15 @@ def scan_and_auto_trade():
         print(f"[시장 차단] {market_msg}")
         return
 
-    cache = build_market_cache()
+    cache = shared_cache or build_shared_market_cache()
     if not cache:
         return
 
-    candidates = []
-
-    analyzers = [
-        analyze_early_entry,
-        analyze_pre_breakout_entry,
-        analyze_breakout_entry,
-        analyze_chase_entry,
-    ]
-
-    for ticker, data in cache.items():
-        for analyzer in analyzers:
-            try:
-                signal = analyzer(ticker, data)
-                if signal and should_auto_buy_signal(signal):
-                    candidates.append(signal)
-            except Exception:
-                continue
-
+    candidates = collect_signals_from_cache(cache, auto_only=True)
     if not candidates:
         return
 
+    candidates = dedupe_best_signal_per_ticker(candidates, key_name="edge_score")
     candidates.sort(key=signal_score, reverse=True)
     best = candidates[0]
     ticker = best["ticker"]
@@ -1530,7 +1668,6 @@ def monitor_positions():
             market_value = balance * current_price
 
             if balance <= 0:
-                # pending sell이 있으면 나중에 보정
                 if ticker in pending_sells:
                     continue
                 active_positions.pop(ticker, None)
@@ -1549,11 +1686,9 @@ def monitor_positions():
             tp_price = entry_price * (1 + pos["take_profit_pct"] / 100)
             held_sec = int(time.time() - int(pos["entered_at"]))
 
-            # 5천원 미만은 매도 불가 대기
             if market_value < MIN_ORDER_KRW:
                 continue
 
-            # 시간정리
             if held_sec >= pos["time_stop_sec"]:
                 if pnl_pct < 0.8:
                     ok, msg = sell_market_confirmed(ticker, "TIME_STOP", pos, current_price, pnl_pct, held_sec)
@@ -1586,7 +1721,6 @@ def monitor_positions():
                         )
                     continue
 
-            # 손절
             if current_price <= stop_price:
                 ok, msg = sell_market_confirmed(ticker, "STOP", pos, current_price, pnl_pct, held_sec)
                 if ok:
@@ -1615,7 +1749,6 @@ def monitor_positions():
                     )
                 continue
 
-            # 본절
             if pnl_pct >= BREAKEVEN_TRIGGER_PCT:
                 if not pos.get("breakeven_armed", False):
                     pos["breakeven_armed"] = True
@@ -1651,7 +1784,6 @@ def monitor_positions():
                         )
                     continue
 
-            # 트레일링
             if pnl_pct >= TRAIL_START_PCT:
                 if not pos.get("trailing_armed", False):
                     pos["trailing_armed"] = True
@@ -1689,7 +1821,6 @@ def monitor_positions():
                         )
                     continue
 
-            # 목표익절
             if current_price >= tp_price:
                 ok, msg = sell_market_confirmed(ticker, "TP", pos, current_price, pnl_pct, held_sec)
                 if ok:
@@ -1844,10 +1975,18 @@ def btc_command(update, context: CallbackContext):
 
 def status_command(update, context: CallbackContext):
     if not active_positions:
+        if pending_sells:
+            lines = ["⚠️ 매도 확인 대기중"]
+            for ticker in pending_sells.keys():
+                lines.append(f"• {ticker}")
+            send("📭 현재 보유 포지션 없음\n\n" + "\n".join(lines))
+            return
         send("📭 현재 보유 포지션 없음")
         return
 
     lines = []
+    dust_lines = []
+
     for ticker, pos in active_positions.items():
         price = get_price(ticker)
         entry = float(pos["entry_price"])
@@ -1856,21 +1995,31 @@ def status_command(update, context: CallbackContext):
         held_min = int((time.time() - int(pos["entered_at"])) / 60)
         value = qty * price if price > 0 else 0
 
+        line = (
+            f"• {ticker} / 방식 {pos['strategy_label']} / 진입 {fmt_price(entry)} / 현재 {fmt_price(price)} "
+            f"/ 수익률 {fmt_pct(pnl)} / 평가금액 {fmt_price(value)} / 보유 {held_min}분 / 기대점수 {pos.get('edge_score', 0):.2f}"
+        )
+
         if value < MIN_ORDER_KRW:
-            lines.append(
-                f"• {ticker} / 방식 {pos['strategy_label']} / 진입 {fmt_price(entry)} / 현재 {fmt_price(price)} / 수익률 {fmt_pct(pnl)} / 평가금액 {fmt_price(value)} / 상태 소액포지션 대기중 / 보유 {held_min}분 / 기대점수 {pos.get('edge_score', 0):.2f}"
-            )
+            dust_lines.append(line + " / 상태 소액포지션 대기중")
         else:
-            lines.append(
-                f"• {ticker} / 방식 {pos['strategy_label']} / 진입 {fmt_price(entry)} / 현재 {fmt_price(price)} / 수익률 {fmt_pct(pnl)} / 평가금액 {fmt_price(value)} / 보유 {held_min}분 / 기대점수 {pos.get('edge_score', 0):.2f}"
-            )
+            lines.append(line)
+
+    msg_parts = []
+
+    if lines:
+        msg_parts.append("📌 현재 포지션\n\n" + "\n".join(lines))
+
+    if dust_lines:
+        msg_parts.append("🪙 소액 포지션(최소 주문금액 미만)\n\n" + "\n".join(dust_lines))
 
     if pending_sells:
-        lines.append("\n⚠️ 매도 확인 대기중")
+        p = ["⚠️ 매도 확인 대기중"]
         for ticker in pending_sells.keys():
-            lines.append(f"• {ticker}")
+            p.append(f"• {ticker}")
+        msg_parts.append("\n".join(p))
 
-    send("📌 현재 포지션\n\n" + "\n".join(lines))
+    send("\n\n".join(msg_parts))
 
 # =========================
 # 텔레그램 실행
@@ -1909,7 +2058,8 @@ while True:
 
     if now_ts - last_scan_time >= SCAN_INTERVAL:
         try:
-            scan_and_auto_trade()
+            shared_cache = build_shared_market_cache(force=False)
+            scan_and_auto_trade(shared_cache=shared_cache)
         except Exception as e:
             print(f"[자동진입 스캔 오류] {e}")
             traceback.print_exc()
@@ -1941,7 +2091,8 @@ while True:
 
     if now_ts - last_watch_report_time >= WATCH_REPORT_INTERVAL:
         try:
-            scan_watchlist()
+            shared_cache = build_shared_market_cache(force=False)
+            scan_watchlist(shared_cache=shared_cache)
         except Exception as e:
             print(f"[후보 리포트 오류] {e}")
         last_watch_report_time = now_ts
