@@ -13,7 +13,7 @@ from telegram.ext import Updater, CommandHandler, CallbackContext
 # =========================================================
 # 버전
 # =========================================================
-BOT_VERSION = "수익형 v6.5.6"
+BOT_VERSION = "수익형 v6.5.7"
 
 # =========================================================
 # 환경변수
@@ -371,15 +371,13 @@ def send_startup_message():
 - 상승 시작형
 - 눌림 반등형
 
-v6.5.6 핵심:
-- 횡보/혼조 장 자동매수 더 보수화
-- 초반 선점형 품질 필터 강화
-- 추세 지속형 고점 근접 진입 추가 보정
-- 후보 재확인 반복 알림 축소
-- 좋은 상승 시작형은 2차확인 후보 허용
-- 좋아졌을 때만 강화 알림
-- 늦은 진입 방지 유지
-- 진입 후 힘 확인 강화
+v6.5.7 핵심:
+- S/A/B 등급제로 좋은 거래 특별대우
+- S급은 목표 수익 / 시간정리 / 본절보호를 더 넓게 운영
+- 횡보/혼조 장의 애매한 자동매수는 더 보수화
+- 초반 선점형 품질 필터 유지 강화
+- 추세 지속형 고점 근접 진입 보정 유지
+- 후보 재확인 반복 알림 축소 유지
 - 연속 실패 시 자동 쉬기
 - 수동 쉬기 해제(/reset_pause)
 - 매도 exit 보정
@@ -978,6 +976,62 @@ def expected_edge_score(strategy, base_signal_score, stop_loss_pct, take_profit_
         score -= 0.8
     return round(score, 2)
 
+
+def classify_trade_tier(signal, regime=None):
+    strategy = signal.get("strategy", "")
+    edge = safe_float(signal.get("edge_score", 0))
+    vol = safe_float(signal.get("vol_ratio", 0))
+    rsi = safe_float(signal.get("rsi", 0))
+    tags = set(signal.get("pattern_tags", []))
+    regime_name = (regime or {}).get("name", "NORMAL")
+
+    if (
+        strategy in TRADE_TIER_S_ALLOWED
+        and edge >= TRADE_TIER_S_EDGE_MIN
+        and vol >= TRADE_TIER_S_VOL_MIN
+        and rsi <= 66
+        and regime_name in TRADE_TIER_S_BTC_OK
+        and (tags.intersection({"저점높임", "양봉절반유지", "눌림재확인"}) or strategy == "TREND_CONT")
+    ):
+        return "S"
+    if edge >= TRADE_TIER_A_EDGE_MIN and vol >= TRADE_TIER_A_VOL_MIN:
+        return "A"
+    return "B"
+
+
+def apply_trade_tier_adjustments(signal, regime=None):
+    tier = classify_trade_tier(signal, regime=regime)
+    signal["trade_tier"] = tier
+
+    tp = safe_float(signal.get("take_profit_pct", BASE_TP_PCT))
+    ts = int(safe_float(signal.get("time_stop_sec", TIME_STOP_MAX_SEC)))
+
+    if tier == "S":
+        signal["take_profit_pct"] = round(min(tp + S_TP_BONUS_PCT, 7.2), 2)
+        signal["time_stop_sec"] = int(min(ts + S_TIME_STOP_BONUS_SEC, TIME_STOP_MAX_SEC + 240))
+        signal["breakeven_trigger_pct"] = S_BREAKEVEN_TRIGGER_PCT
+        signal["breakeven_buffer_pct"] = S_BREAKEVEN_BUFFER_PCT
+        signal["trail_start_pct"] = S_TRAIL_START_PCT
+        signal["trail_backoff_pct"] = S_TRAIL_BACKOFF_PCT
+    elif tier == "A":
+        signal["take_profit_pct"] = round(min(tp + A_TP_BONUS_PCT, 6.9), 2)
+        signal["time_stop_sec"] = int(min(ts + A_TIME_STOP_BONUS_SEC, TIME_STOP_MAX_SEC + 120))
+        signal["breakeven_trigger_pct"] = A_BREAKEVEN_TRIGGER_PCT
+        signal["breakeven_buffer_pct"] = A_BREAKEVEN_BUFFER_PCT
+        signal["trail_start_pct"] = A_TRAIL_START_PCT
+        signal["trail_backoff_pct"] = A_TRAIL_BACKOFF_PCT
+    else:
+        signal["breakeven_trigger_pct"] = BREAKEVEN_TRIGGER_PCT
+        signal["breakeven_buffer_pct"] = BREAKEVEN_BUFFER_PCT
+        signal["trail_start_pct"] = TRAIL_START_PCT
+        signal["trail_backoff_pct"] = TRAIL_BACKOFF_PCT
+    return signal
+
+
+def signal_priority_value(signal):
+    tier_bonus = {"S": 1.15, "A": 0.35, "B": 0.0}.get(signal.get("trade_tier", "B"), 0.0)
+    return float(signal.get("edge_score", signal.get("signal_score", 0))) + tier_bonus
+
 # FULL FILE CONTINUES BELOW EXACTLY AS NEEDED FOR THE BOT.
 # To keep this tool call manageable, the complete file is saved directly.
 
@@ -1268,6 +1322,7 @@ def base_signal(ticker, strategy, strategy_label, current_price, vol_ratio, chan
         "reference_high": reference_high,
         "reference_low": reference_low,
         "reason": reason,
+        "trade_tier": "B",
     }
 
 
@@ -1875,6 +1930,11 @@ def build_position(signal, filled_entry, filled_qty, used_krw):
         "trailing_armed": False,
         "reason": signal["reason"],
         "edge_score": signal.get("edge_score", 0),
+        "trade_tier": signal.get("trade_tier", "B"),
+        "breakeven_trigger_pct": signal.get("breakeven_trigger_pct", BREAKEVEN_TRIGGER_PCT),
+        "breakeven_buffer_pct": signal.get("breakeven_buffer_pct", BREAKEVEN_BUFFER_PCT),
+        "trail_start_pct": signal.get("trail_start_pct", TRAIL_START_PCT),
+        "trail_backoff_pct": signal.get("trail_backoff_pct", TRAIL_BACKOFF_PCT),
         "managed_by_bot": True,
         "invalid_break_level": safe_float(signal.get("invalid_break_level", 0)),
         "entry_strategy_snapshot": signal["strategy"],
@@ -1941,6 +2001,7 @@ def buy_market(signal):
                 "take_profit_pct": signal["take_profit_pct"],
                 "time_stop_sec": signal["time_stop_sec"],
                 "edge_score": signal.get("edge_score"),
+                "trade_tier": signal.get("trade_tier", "B"),
                 "reason": signal["reason"],
                 "managed_by_bot": True,
                 "invalid_break_level": signal.get("invalid_break_level", 0),
@@ -2071,20 +2132,27 @@ def should_auto_buy_signal(signal, regime=None):
     if tp < MIN_EXPECTED_TP_PCT:
         return False
     required_edge = MIN_EXPECTED_EDGE_SCORE
+    tier = signal.get("trade_tier", "B")
     if regime:
         if not strategy_allowed_in_regime(strategy, regime):
             return False
         if regime.get("name") == "SIDEWAYS":
-            required_edge += 0.8
+            required_edge += 0.9
             if strategy == "EARLY":
-                required_edge += 0.5
-        elif regime.get("name") == "WEAK":
-            required_edge += 1.0
-            if strategy in ["EARLY", "TREND_CONT"]:
+                required_edge += 0.7
+            if tier == "B":
                 required_edge += 0.4
+        elif regime.get("name") == "WEAK":
+            required_edge += 1.1
+            if strategy in ["EARLY", "TREND_CONT"]:
+                required_edge += 0.5
+            if tier != "S":
+                required_edge += 0.3
         elif regime.get("name") == "NORMAL":
             if strategy == "EARLY":
                 required_edge += 0.2
+    if strategy == "EARLY" and tier == "B" and regime and regime.get("name") in ["SIDEWAYS", "WEAK"]:
+        return False
     if edge < required_edge:
         return False
     return True
@@ -2295,7 +2363,7 @@ def process_pending_buy_promotions(shared_cache=None):
 🚀 후보 승격 후 자동매수 완료
 
 📊 {ticker}
-방식: {current_signal['strategy_label']}
+방식: {current_signal['strategy_label']} / 등급 {current_signal.get('trade_tier','B')}
 
 💰 매수가(보정): {fmt_price(result['entry'])}
 📦 수량: {result['qty']:.6f}
@@ -2418,6 +2486,7 @@ def collect_signals_from_cache(cache, auto_only=False, regime=None):
                 signal = analyzer(ticker, data)
                 if not signal:
                     continue
+                signal = apply_trade_tier_adjustments(signal, regime=regime)
                 if regime and not strategy_allowed_in_regime(signal["strategy"], regime):
                     continue
                 if auto_only and not should_auto_buy_signal(signal, regime=regime):
@@ -2450,7 +2519,7 @@ def scan_watchlist(shared_cache=None):
 
     update_pending_buy_candidates_from_results(results, regime)
     unique_results = dedupe_best_signal_per_ticker(results, key_name="signal_score")
-    unique_results.sort(key=lambda x: float(x.get("signal_score", 0)), reverse=True)
+    unique_results.sort(key=lambda x: signal_priority_value(x), reverse=True)
     top = unique_results[:5]
 
     new_lines, upgrade_lines, renotice_lines = [], [], []
@@ -2469,7 +2538,7 @@ def scan_watchlist(shared_cache=None):
 
         base_line = (
             f"• {ticker} / {fmt_price(item['current_price'])} / 상승 {float(item.get('change_pct', 0)):.2f}% "
-            f"/ 거래량 {float(item.get('vol_ratio', 0)):.2f}배 / 방식 {item['strategy_label']}{tag_text}"
+            f"/ 거래량 {float(item.get('vol_ratio', 0)):.2f}배 / 방식 {item['strategy_label']} / 등급 {item.get('trade_tier','B')}{tag_text}"
         )
 
         if alert_type == "upgrade":
@@ -2517,7 +2586,7 @@ def scan_and_auto_trade(shared_cache=None):
         return
 
     candidates = dedupe_best_signal_per_ticker(candidates, key_name="edge_score")
-    candidates.sort(key=signal_score, reverse=True)
+    candidates.sort(key=signal_priority_value, reverse=True)
     best = candidates[0]
     ticker = best["ticker"]
 
@@ -2541,7 +2610,7 @@ def scan_and_auto_trade(shared_cache=None):
 🔥 자동매수 완료
 
 📊 {ticker}
-방식: {best['strategy_label']}
+방식: {best['strategy_label']} / 등급 {best.get('trade_tier','B')}
 
 💰 매수가(보정): {fmt_price(result['entry'])}
 📦 수량: {result['qty']:.6f}
@@ -2864,12 +2933,17 @@ def monitor_positions():
                     send(f"\n⚠️ 손절 시도했지만 확인 지연\n\n📊 {ticker}\n방식: {pos['strategy_label']}\n\n사유:\n{msg}\n")
                 continue
 
-            if pnl_pct >= BREAKEVEN_TRIGGER_PCT and not pos.get("breakeven_armed", False):
+            be_trigger_pct = float(pos.get("breakeven_trigger_pct", BREAKEVEN_TRIGGER_PCT))
+            be_buffer_pct = float(pos.get("breakeven_buffer_pct", BREAKEVEN_BUFFER_PCT))
+            trail_start_pct = float(pos.get("trail_start_pct", TRAIL_START_PCT))
+            trail_backoff_pct = float(pos.get("trail_backoff_pct", TRAIL_BACKOFF_PCT))
+
+            if pnl_pct >= be_trigger_pct and not pos.get("breakeven_armed", False):
                 pos["breakeven_armed"] = True
                 save_positions()
 
             if pos.get("breakeven_armed", False):
-                be_price = entry_price * (1 + BREAKEVEN_BUFFER_PCT / 100)
+                be_price = entry_price * (1 + be_buffer_pct / 100)
                 if held_sec >= 240 and current_price <= be_price:
                     ok, msg = sell_market_confirmed(ticker, "BREAKEVEN", pos, current_price, pnl_pct, held_sec)
                     if ok:
@@ -2878,12 +2952,12 @@ def monitor_positions():
                         send(f"\n⚠️ 본절 정리 시도했지만 확인 지연\n\n📊 {ticker}\n방식: {pos['strategy_label']}\n\n사유:\n{msg}\n")
                     continue
 
-            if pnl_pct >= TRAIL_START_PCT and not pos.get("trailing_armed", False):
+            if pnl_pct >= trail_start_pct and not pos.get("trailing_armed", False):
                 pos["trailing_armed"] = True
                 save_positions()
 
             if pos.get("trailing_armed", False):
-                trail_stop = pos["peak_price"] * (1 - TRAIL_BACKOFF_PCT / 100)
+                trail_stop = pos["peak_price"] * (1 - trail_backoff_pct / 100)
                 if current_price <= trail_stop:
                     ok, msg = sell_market_confirmed(ticker, "TRAIL_TP", pos, current_price, pnl_pct, held_sec)
                     if ok:
