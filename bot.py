@@ -13,7 +13,7 @@ from telegram.ext import Updater, CommandHandler, CallbackContext
 # =========================
 # 버전
 # =========================
-BOT_VERSION = "수익형 v6.3"
+BOT_VERSION = "수익형 v6.4"
 
 # =========================
 # 환경변수
@@ -80,7 +80,6 @@ BTC_CRASH_BLOCK_PCT = -2.0
 BTC_STRONG_BLOCK_PCT = -2.8
 BTC_MA_FILTER = True
 
-# 쉬는 장 필터 강화
 REGIME_FILTER_ON = True
 REGIME_BLOCK_BREAKOUT_ON_SIDEWAYS = True
 REGIME_SIDEWAYS_MAX_ABS_PCT = 0.55
@@ -102,15 +101,15 @@ BREAKEVEN_BUFFER_PCT = 0.15
 TIME_STOP_MIN_SEC = 480
 TIME_STOP_MAX_SEC = 1080
 
-MIN_EXPECTED_EDGE_SCORE = 7.6
+MIN_EXPECTED_EDGE_SCORE = 7.8
 MIN_EXPECTED_TP_PCT = 3.2
 
 # =========================
 # 초반 선점형 (자동매수 허용)
 # =========================
-EARLY_MIN_CHANGE_PCT = 0.8
-EARLY_MAX_CHANGE_PCT = 2.5
-EARLY_MIN_VOL_RATIO = 2.5
+EARLY_MIN_CHANGE_PCT = 0.75
+EARLY_MAX_CHANGE_PCT = 2.4
+EARLY_MIN_VOL_RATIO = 2.4
 EARLY_MIN_RSI = 45
 EARLY_MAX_RSI = 63
 EARLY_MIN_RANGE_PCT = 0.8
@@ -182,6 +181,20 @@ SCENARIO_MIN_PROGRESS_PCT = 0.18
 SCENARIO_FAIL_DROP_FROM_BREAK_LEVEL_PCT = 0.10
 SCENARIO_FAIL_DROP_FROM_ENTRY_PCT = -0.45
 SCENARIO_WEAK_VOL_RATIO_THRESHOLD = 1.15
+
+# =========================
+# 차트 구조 패턴
+# =========================
+PATTERN_FILTER_ON = True
+
+# 핵심 3개
+USE_HIGHER_LOWS_CORE = True
+USE_BOX_COMPRESSION_CORE = True
+USE_BIG_BULL_HALF_HOLD_CORE = True
+
+# 보조 2개
+USE_FAKE_BREAKDOWN_RECOVERY_BONUS = True
+USE_PULLBACK_RECHECK_BONUS = True
 
 # =========================
 # 리포트 간격
@@ -283,10 +296,11 @@ def send_startup_message():
 - 상승 시작형
 - 눌림 반등형
 
-v6.3 개선:
+v6.4 핵심:
 - 쉬는 장 필터 강화
 - 늦은 진입 방지
 - 시나리오 실패 빠른 정리
+- 차트 구조 5개 반영
 - 공유 캐시
 - 매도 exit 보정
 
@@ -509,6 +523,214 @@ def get_recent_low(df, n=8, exclude_last=False):
         return float(recent["low"].min())
     except Exception:
         return 0.0
+
+# =========================
+# 차트 구조 패턴
+# =========================
+def detect_higher_lows(df, bars=12):
+    try:
+        recent = df.tail(bars)
+        if len(recent) < 12:
+            return False, {}
+
+        part1 = recent.iloc[0:4]
+        part2 = recent.iloc[4:8]
+        part3 = recent.iloc[8:12]
+
+        low1 = float(part1["low"].min())
+        low2 = float(part2["low"].min())
+        low3 = float(part3["low"].min())
+
+        ok = low1 < low2 < low3
+        return ok, {
+            "low1": low1,
+            "low2": low2,
+            "low3": low3,
+        }
+    except Exception:
+        return False, {}
+
+def detect_box_top_compression(df, bars=12):
+    try:
+        recent = df.tail(bars)
+        if len(recent) < 12:
+            return False, {}
+
+        highs = list(recent["high"].tail(6))
+        lows = list(recent["low"].tail(6))
+        current_price = float(recent["close"].iloc[-1])
+
+        hi_max = max(highs)
+        hi_min = min(highs)
+        low_early = min(lows[:3])
+        low_late = min(lows[3:])
+        high_band_pct = ((hi_max - hi_min) / hi_min) * 100 if hi_min > 0 else 999
+        dist_from_top_pct = ((hi_max - current_price) / current_price) * 100 if current_price > 0 else 999
+
+        ok = (
+            high_band_pct <= 0.45
+            and low_late >= low_early
+            and 0 <= dist_from_top_pct <= 0.35
+        )
+
+        return ok, {
+            "hi_max": hi_max,
+            "hi_min": hi_min,
+            "high_band_pct": high_band_pct,
+            "dist_from_top_pct": dist_from_top_pct,
+            "low_early": low_early,
+            "low_late": low_late,
+        }
+    except Exception:
+        return False, {}
+
+def detect_big_bull_half_hold(df, bars=10):
+    try:
+        recent = df.tail(bars)
+        if len(recent) < 8:
+            return False, {}
+
+        best_idx = None
+        best_body = 0.0
+        for idx, row in recent.iloc[:-1].iterrows():
+            o = float(row["open"])
+            c = float(row["close"])
+            if c <= o:
+                continue
+            body = c - o
+            if body > best_body:
+                best_body = body
+                best_idx = idx
+
+        if best_idx is None or best_body <= 0:
+            return False, {}
+
+        bull = recent.loc[best_idx]
+        o = float(bull["open"])
+        c = float(bull["close"])
+        half_level = o + (c - o) * 0.5
+
+        after = recent.loc[best_idx:]
+        current_price = float(recent["close"].iloc[-1])
+        low_after = float(after["low"].min())
+
+        ok = current_price >= half_level and low_after >= half_level * 0.998
+
+        return ok, {
+            "half_level": half_level,
+            "bull_open": o,
+            "bull_close": c,
+            "current_price": current_price,
+            "low_after": low_after,
+        }
+    except Exception:
+        return False, {}
+
+def detect_fake_breakdown_recovery(df, bars=10):
+    try:
+        recent = df.tail(bars)
+        if len(recent) < 8:
+            return False, {}
+
+        support_zone = float(recent.iloc[:-2]["low"].tail(5).min())
+        prev = recent.iloc[-2]
+        last = recent.iloc[-1]
+
+        prev_low = float(prev["low"])
+        prev_close = float(prev["close"])
+        last_close = float(last["close"])
+
+        broke = prev_low < support_zone * 0.998
+        recovered = last_close >= support_zone * 1.001
+        ok = broke and recovered
+
+        return ok, {
+            "support_zone": support_zone,
+            "prev_low": prev_low,
+            "prev_close": prev_close,
+            "last_close": last_close,
+        }
+    except Exception:
+        return False, {}
+
+def detect_pullback_recheck(df, bars=12):
+    try:
+        recent = df.tail(bars)
+        if len(recent) < 12:
+            return False, {}
+
+        part1 = recent.iloc[0:4]
+        part2 = recent.iloc[4:8]
+        part3 = recent.iloc[8:12]
+
+        rise1 = ((float(part1["close"].iloc[-1]) - float(part1["close"].iloc[0])) / float(part1["close"].iloc[0])) * 100
+        pull2 = ((float(part2["close"].iloc[-1]) - float(part2["close"].iloc[0])) / float(part2["close"].iloc[0])) * 100
+        recover3 = ((float(part3["close"].iloc[-1]) - float(part3["close"].iloc[0])) / float(part3["close"].iloc[0])) * 100
+
+        high1 = float(part1["high"].max())
+        close3 = float(part3["close"].iloc[-1])
+
+        ok = (
+            rise1 >= 0.8
+            and pull2 <= -0.2
+            and recover3 >= 0.35
+            and close3 >= high1 * 0.995
+        )
+
+        return ok, {
+            "rise1": rise1,
+            "pull2": pull2,
+            "recover3": recover3,
+            "high1": high1,
+            "close3": close3,
+        }
+    except Exception:
+        return False, {}
+
+def analyze_chart_patterns(df):
+    patterns = {}
+    tags = []
+    bonus_score = 0.0
+
+    hl_ok, hl_meta = detect_higher_lows(df)
+    bc_ok, bc_meta = detect_box_top_compression(df)
+    bh_ok, bh_meta = detect_big_bull_half_hold(df)
+    fb_ok, fb_meta = detect_fake_breakdown_recovery(df)
+    pr_ok, pr_meta = detect_pullback_recheck(df)
+
+    patterns["higher_lows"] = hl_ok
+    patterns["box_compression"] = bc_ok
+    patterns["big_bull_half_hold"] = bh_ok
+    patterns["fake_breakdown_recovery"] = fb_ok
+    patterns["pullback_recheck"] = pr_ok
+
+    if hl_ok:
+        tags.append("저점높임")
+    if bc_ok:
+        tags.append("상단압축")
+    if bh_ok:
+        tags.append("양봉절반유지")
+
+    if fb_ok and USE_FAKE_BREAKDOWN_RECOVERY_BONUS:
+        tags.append("가짜하락회복")
+        bonus_score += 0.45
+
+    if pr_ok and USE_PULLBACK_RECHECK_BONUS:
+        tags.append("눌림재확인")
+        bonus_score += 0.55
+
+    return {
+        "patterns": patterns,
+        "tags": tags,
+        "bonus_score": bonus_score,
+        "meta": {
+            "higher_lows": hl_meta,
+            "box_compression": bc_meta,
+            "big_bull_half_hold": bh_meta,
+            "fake_breakdown_recovery": fb_meta,
+            "pullback_recheck": pr_meta,
+        }
+    }
 
 # =========================
 # BTC / 시장 상태
@@ -919,7 +1141,6 @@ def late_entry_block(ticker, strategy, df, current_price):
     change_5 = get_recent_change_pct(df, 5)
     change_3 = get_recent_change_pct(df, 3)
 
-    # 최근 고점 바로 아래에서 추격 방지
     if strategy in ["BREAKOUT", "CHASE"] and 0 <= dist_to_high_pct <= LATE_ENTRY_MAX_NEAR_HIGH_PCT:
         if change_3 >= 1.0:
             return True, f"너무 고점 바로 밑이라 늦은 진입 ({dist_to_high_pct:.2f}%)"
@@ -937,6 +1158,54 @@ def late_entry_block(ticker, strategy, df, current_price):
 
     return False, ""
 
+def passes_core_pattern_filter(strategy, pattern_info):
+    if not PATTERN_FILTER_ON:
+        return True
+
+    p = pattern_info["patterns"]
+
+    hl = p.get("higher_lows", False)
+    bc = p.get("box_compression", False)
+    bh = p.get("big_bull_half_hold", False)
+
+    if strategy == "EARLY":
+        need = (hl if USE_HIGHER_LOWS_CORE else False) or (bh if USE_BIG_BULL_HALF_HOLD_CORE else False)
+        return need
+
+    if strategy == "PRE_BREAKOUT":
+        left = bc if USE_BOX_COMPRESSION_CORE else True
+        right = hl or bh
+        return left and right
+
+    if strategy == "BREAKOUT":
+        left = (bc if USE_BOX_COMPRESSION_CORE else False) or (bh if USE_BIG_BULL_HALF_HOLD_CORE else False)
+        return left
+
+    if strategy == "CHASE":
+        return (bc or bh)
+
+    return True
+
+def pattern_bonus_score(pattern_info):
+    bonus = 0.0
+    p = pattern_info["patterns"]
+
+    if p.get("higher_lows", False):
+        bonus += 0.55
+    if p.get("box_compression", False):
+        bonus += 0.60
+    if p.get("big_bull_half_hold", False):
+        bonus += 0.65
+
+    bonus += pattern_info.get("bonus_score", 0.0)
+    return bonus
+
+def pattern_reason_suffix(pattern_info):
+    tags = pattern_info.get("tags", [])
+    if not tags:
+        return ""
+    return "\n- 차트 구조: " + ", ".join(tags)
+
 # =========================
 # 전략
 # =========================
@@ -945,6 +1214,10 @@ def analyze_early_entry(ticker: str, data: dict):
     current_price = data["price"]
 
     if df is None or len(df) < 30 or current_price <= 0:
+        return None
+
+    pattern_info = analyze_chart_patterns(df)
+    if not passes_core_pattern_filter("EARLY", pattern_info):
         return None
 
     change_pct = get_recent_change_pct(df, 5)
@@ -976,6 +1249,8 @@ def analyze_early_entry(ticker: str, data: dict):
         return None
 
     base_score = 5.8 + min(vol_ratio, 4.2) * 0.9 + min(change_pct, 2.4) * 0.8 + min(data.get("surge_score", 0), 8) * 0.18
+    base_score += pattern_bonus_score(pattern_info)
+
     stop_loss_pct = dynamic_stop_loss_pct(vol_ratio, range_pct, "EARLY")
     take_profit_pct = dynamic_take_profit_pct(vol_ratio, range_pct, "EARLY")
     time_stop_sec = dynamic_time_stop_sec(vol_ratio, range_pct, "EARLY")
@@ -996,12 +1271,14 @@ def analyze_early_entry(ticker: str, data: dict):
         "take_profit_pct": take_profit_pct,
         "time_stop_sec": time_stop_sec,
         "invalid_break_level": 0.0,
+        "pattern_tags": pattern_info["tags"],
         "reason": (
             f"- 이제 막 오르기 시작했어\n"
             f"- 거래량 {vol_ratio:.2f}배\n"
             f"- 최근 상승 {change_pct:.2f}%\n"
             f"- RSI {rsi:.2f}\n"
             f"- 초입 흐름이 살아있어"
+            f"{pattern_reason_suffix(pattern_info)}"
         )
     }
 
@@ -1011,6 +1288,8 @@ def analyze_prepump_entry(ticker: str, data: dict):
 
     if df is None or len(df) < 30 or current_price <= 0:
         return None
+
+    pattern_info = analyze_chart_patterns(df)
 
     rsi = safe_float(calculate_rsi(df).iloc[-1])
     vol_ratio = get_vol_ratio(df, 5, 20)
@@ -1033,6 +1312,7 @@ def analyze_prepump_entry(ticker: str, data: dict):
         return None
 
     score = 4.9 + min(vol_ratio, 4.0) * 0.8 + min(data.get("surge_score", 0), 8) * 0.12
+    score += pattern_info.get("bonus_score", 0)
 
     return {
         "ticker": ticker,
@@ -1051,6 +1331,8 @@ def analyze_pullback_entry(ticker: str, data: dict):
 
     if df is None or len(df) < 35 or current_price <= 0:
         return None
+
+    pattern_info = analyze_chart_patterns(df)
 
     recent15 = df.tail(15)
     recent_low = float(recent15["low"].min())
@@ -1078,6 +1360,8 @@ def analyze_pullback_entry(ticker: str, data: dict):
     if vol_ratio < PULLBACK_MIN_VOL_RATIO:
         return None
 
+    score = 4.8 + vol_ratio * 0.8 + pattern_info.get("bonus_score", 0.0)
+
     return {
         "ticker": ticker,
         "strategy": "PULLBACK",
@@ -1085,7 +1369,7 @@ def analyze_pullback_entry(ticker: str, data: dict):
         "current_price": current_price,
         "vol_ratio": r(vol_ratio, 2),
         "change_pct": r(rebound_pct, 2),
-        "signal_score": r(4.8 + vol_ratio * 0.8, 2),
+        "signal_score": r(score, 2),
     }
 
 def analyze_pre_breakout_entry(ticker: str, data: dict):
@@ -1093,6 +1377,10 @@ def analyze_pre_breakout_entry(ticker: str, data: dict):
     current_price = data["price"]
 
     if df is None or len(df) < 35 or current_price <= 0:
+        return None
+
+    pattern_info = analyze_chart_patterns(df)
+    if not passes_core_pattern_filter("PRE_BREAKOUT", pattern_info):
         return None
 
     change_pct = get_recent_change_pct(df, 5)
@@ -1141,6 +1429,8 @@ def analyze_pre_breakout_entry(ticker: str, data: dict):
         return None
 
     base_score = 6.0 + min(vol_ratio, 4.5) * 0.85 + (PRE_BREAKOUT_MAX_GAP_PCT - gap_to_break) * 3.4 + min(data.get("surge_score", 0), 8) * 0.16
+    base_score += pattern_bonus_score(pattern_info)
+
     stop_loss_pct = dynamic_stop_loss_pct(vol_ratio, range_pct, "PRE_BREAKOUT")
     take_profit_pct = dynamic_take_profit_pct(vol_ratio, range_pct, "PRE_BREAKOUT")
     time_stop_sec = dynamic_time_stop_sec(vol_ratio, range_pct, "PRE_BREAKOUT")
@@ -1162,12 +1452,14 @@ def analyze_pre_breakout_entry(ticker: str, data: dict):
         "take_profit_pct": take_profit_pct,
         "time_stop_sec": time_stop_sec,
         "invalid_break_level": recent_high,
+        "pattern_tags": pattern_info["tags"],
         "reason": (
             f"- 거의 돌파 직전이야\n"
             f"- 거래량 {vol_ratio:.2f}배\n"
             f"- 최근 상승 {change_pct:.2f}%\n"
             f"- 직전 고점까지 남은 거리 {gap_to_break:.2f}%\n"
             f"- RSI {rsi:.2f}"
+            f"{pattern_reason_suffix(pattern_info)}"
         )
     }
 
@@ -1176,6 +1468,10 @@ def analyze_breakout_entry(ticker: str, data: dict):
     current_price = data["price"]
 
     if df is None or len(df) < 40 or current_price <= 0:
+        return None
+
+    pattern_info = analyze_chart_patterns(df)
+    if not passes_core_pattern_filter("BREAKOUT", pattern_info):
         return None
 
     change_pct = get_recent_change_pct(df, 5)
@@ -1222,6 +1518,8 @@ def analyze_breakout_entry(ticker: str, data: dict):
         return None
 
     base_score = 6.0 + min(vol_ratio, 5.0) * 0.80 + min(change_pct, 3.4) * 0.65 + min(break_pct, 0.7) * 1.25 + min(data.get("surge_score", 0), 8) * 0.12
+    base_score += pattern_bonus_score(pattern_info)
+
     stop_loss_pct = dynamic_stop_loss_pct(vol_ratio, range_pct, "BREAKOUT")
     take_profit_pct = dynamic_take_profit_pct(vol_ratio, range_pct, "BREAKOUT")
     time_stop_sec = dynamic_time_stop_sec(vol_ratio, range_pct, "BREAKOUT")
@@ -1243,12 +1541,14 @@ def analyze_breakout_entry(ticker: str, data: dict):
         "take_profit_pct": take_profit_pct,
         "time_stop_sec": time_stop_sec,
         "invalid_break_level": recent_high,
+        "pattern_tags": pattern_info["tags"],
         "reason": (
             f"- 힘 있게 고점 돌파 중이야\n"
             f"- 거래량 {vol_ratio:.2f}배\n"
             f"- 최근 상승 {change_pct:.2f}%\n"
             f"- 돌파폭 {break_pct:.2f}%\n"
             f"- RSI {rsi:.2f}"
+            f"{pattern_reason_suffix(pattern_info)}"
         )
     }
 
@@ -1260,6 +1560,10 @@ def analyze_chase_entry(ticker: str, data: dict):
     current_price = data["price"]
 
     if df is None or len(df) < 40 or current_price <= 0:
+        return None
+
+    pattern_info = analyze_chart_patterns(df)
+    if not passes_core_pattern_filter("CHASE", pattern_info):
         return None
 
     change_pct = get_recent_change_pct(df, 5)
@@ -1300,6 +1604,8 @@ def analyze_chase_entry(ticker: str, data: dict):
         return None
 
     base_score = 5.0 + min(vol_ratio, 6.0) * 0.65 + min(change_pct, 3.4) * 0.52 + min(data.get("surge_score", 0), 8) * 0.10
+    base_score += pattern_bonus_score(pattern_info)
+
     stop_loss_pct = dynamic_stop_loss_pct(vol_ratio, range_pct, "CHASE")
     take_profit_pct = dynamic_take_profit_pct(vol_ratio, range_pct, "CHASE")
     time_stop_sec = dynamic_time_stop_sec(vol_ratio, range_pct, "CHASE")
@@ -1320,11 +1626,13 @@ def analyze_chase_entry(ticker: str, data: dict):
         "take_profit_pct": take_profit_pct,
         "time_stop_sec": time_stop_sec,
         "invalid_break_level": 0.0,
+        "pattern_tags": pattern_info["tags"],
         "reason": (
             f"- 이미 오르는 중인데 힘이 아주 강해\n"
             f"- 거래량 {vol_ratio:.2f}배\n"
             f"- 최근 상승 {change_pct:.2f}%\n"
             f"- RSI {rsi:.2f}"
+            f"{pattern_reason_suffix(pattern_info)}"
         )
     }
 
@@ -1376,6 +1684,7 @@ def build_position(signal, filled_entry, filled_qty, used_krw):
         "managed_by_bot": True,
         "invalid_break_level": safe_float(signal.get("invalid_break_level", 0)),
         "entry_strategy_snapshot": signal["strategy"],
+        "pattern_tags": signal.get("pattern_tags", []),
     }
 
 def buy_market(signal):
@@ -1441,6 +1750,7 @@ def buy_market(signal):
                 "edge_score": signal.get("edge_score"),
                 "reason": signal["reason"],
                 "managed_by_bot": True,
+                "invalid_break_level": signal.get("invalid_break_level", 0),
             })
 
             return True, {
@@ -1646,6 +1956,7 @@ def recover_positions_from_exchange():
                 "managed_by_bot": True,
                 "invalid_break_level": safe_float(last_buy.get("invalid_break_level", 0)),
                 "entry_strategy_snapshot": strategy,
+                "pattern_tags": last_buy.get("pattern_tags", []),
             }
             recovered += 1
         except Exception:
@@ -1775,8 +2086,13 @@ def scan_watchlist(shared_cache=None):
             continue
         recent_watch_alerts[ticker] = now_ts
 
+        tag_text = ""
+        tags = item.get("pattern_tags", [])
+        if tags:
+            tag_text = f" / 구조 {','.join(tags[:3])}"
+
         lines.append(
-            f"• {ticker} / {fmt_price(item['current_price'])} / 상승 {float(item.get('change_pct', 0)):.2f}% / 거래량 {float(item.get('vol_ratio', 0)):.2f}배 / 방식 {item['strategy_label']}"
+            f"• {ticker} / {fmt_price(item['current_price'])} / 상승 {float(item.get('change_pct', 0)):.2f}% / 거래량 {float(item.get('vol_ratio', 0)):.2f}배 / 방식 {item['strategy_label']}{tag_text}"
         )
 
     if not lines:
@@ -1838,6 +2154,10 @@ def scan_and_auto_trade(shared_cache=None):
         )
         return
 
+    tag_text = ""
+    if best.get("pattern_tags"):
+        tag_text = "\n📐 차트 구조: " + ", ".join(best["pattern_tags"])
+
     send(
         f"""
 🔥 자동매수 완료
@@ -1852,7 +2172,7 @@ def scan_and_auto_trade(shared_cache=None):
 🛑 손절 기준: {fmt_pct(best['stop_loss_pct'])}
 🎯 목표 수익: {fmt_pct(best['take_profit_pct'])}
 ⏱ 오래 안 가면 정리: {int(best['time_stop_sec'] / 60)}분
-📈 수익 기대 점수: {best['edge_score']:.2f}
+📈 수익 기대 점수: {best['edge_score']:.2f}{tag_text}
 
 매수 이유
 {best['reason']}
@@ -1878,7 +2198,6 @@ def should_scenario_fail_exit(ticker, pos, current_price):
     if pnl_pct >= SCENARIO_MIN_PROGRESS_PCT:
         return False, ""
 
-    strategy = pos.get("strategy", "")
     ticker_cache = shared_market_cache.get(ticker)
     if not ticker_cache:
         return False, ""
@@ -1889,19 +2208,17 @@ def should_scenario_fail_exit(ticker, pos, current_price):
 
     vol_ratio_now = get_vol_ratio(df, 2, 8)
     invalid_break_level = safe_float(pos.get("invalid_break_level", 0.0))
+    strategy = pos.get("strategy", "")
 
-    # 돌파/직전형: 기대했던 기준선 아래로 다시 밀리면 실패
     if strategy in ["BREAKOUT", "PRE_BREAKOUT"] and invalid_break_level > 0:
         if current_price <= invalid_break_level * (1 - SCENARIO_FAIL_DROP_FROM_BREAK_LEVEL_PCT / 100):
             if vol_ratio_now < max(SCENARIO_WEAK_VOL_RATIO_THRESHOLD, 1.0):
                 return True, "돌파 기준선 아래로 다시 밀렸고 거래량도 약해"
 
-    # 초반형: 들어갔는데 금방 힘을 못 붙이고 다시 밀리면 실패
     if strategy == "EARLY":
         if pnl_pct <= SCENARIO_FAIL_DROP_FROM_ENTRY_PCT and vol_ratio_now < SCENARIO_WEAK_VOL_RATIO_THRESHOLD:
             return True, "초반 흐름을 기대했는데 바로 힘이 약해졌어"
 
-    # 추격형: 잠깐 더 엄격
     if strategy == "CHASE":
         if pnl_pct <= -0.35:
             return True, "추격 진입 후 바로 탄력이 약했어"
@@ -1943,7 +2260,6 @@ def monitor_positions():
             if market_value < MIN_ORDER_KRW:
                 continue
 
-            # 시나리오 실패 빠른 정리
             fail_exit, fail_reason = should_scenario_fail_exit(ticker, pos, current_price)
             if fail_exit:
                 ok, msg = sell_market_confirmed(ticker, "SCENARIO_FAIL", pos, current_price, pnl_pct, held_sec)
@@ -1977,7 +2293,6 @@ def monitor_positions():
                     )
                 continue
 
-            # 시간정리
             if held_sec >= pos["time_stop_sec"]:
                 if pnl_pct < 0.8:
                     ok, msg = sell_market_confirmed(ticker, "TIME_STOP", pos, current_price, pnl_pct, held_sec)
@@ -2010,7 +2325,6 @@ def monitor_positions():
                         )
                     continue
 
-            # 손절
             if current_price <= stop_price:
                 ok, msg = sell_market_confirmed(ticker, "STOP", pos, current_price, pnl_pct, held_sec)
                 if ok:
@@ -2039,7 +2353,6 @@ def monitor_positions():
                     )
                 continue
 
-            # 본절
             if pnl_pct >= BREAKEVEN_TRIGGER_PCT:
                 if not pos.get("breakeven_armed", False):
                     pos["breakeven_armed"] = True
@@ -2075,7 +2388,6 @@ def monitor_positions():
                         )
                     continue
 
-            # 트레일링
             if pnl_pct >= TRAIL_START_PCT:
                 if not pos.get("trailing_armed", False):
                     pos["trailing_armed"] = True
@@ -2113,7 +2425,6 @@ def monitor_positions():
                         )
                     continue
 
-            # 목표익절
             if current_price >= tp_price:
                 ok, msg = sell_market_confirmed(ticker, "TP", pos, current_price, pnl_pct, held_sec)
                 if ok:
@@ -2287,10 +2598,13 @@ def status_command(update, context: CallbackContext):
         pnl = ((price - entry) / entry) * 100 if entry > 0 and price > 0 else 0
         held_min = int((time.time() - int(pos["entered_at"])) / 60)
         value = qty * price if price > 0 else 0
+        tag_text = ""
+        if pos.get("pattern_tags"):
+            tag_text = " / 구조 " + ",".join(pos["pattern_tags"][:3])
 
         line = (
             f"• {ticker} / 방식 {pos['strategy_label']} / 진입 {fmt_price(entry)} / 현재 {fmt_price(price)} "
-            f"/ 수익률 {fmt_pct(pnl)} / 평가금액 {fmt_price(value)} / 보유 {held_min}분 / 기대점수 {pos.get('edge_score', 0):.2f}"
+            f"/ 수익률 {fmt_pct(pnl)} / 평가금액 {fmt_price(value)} / 보유 {held_min}분 / 기대점수 {pos.get('edge_score', 0):.2f}{tag_text}"
         )
 
         if value < MIN_ORDER_KRW:
