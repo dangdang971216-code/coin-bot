@@ -13,7 +13,7 @@ from telegram.ext import Updater, CommandHandler, CallbackContext
 # =========================================================
 # 버전
 # =========================================================
-BOT_VERSION = "수익형 v6.5.5"
+BOT_VERSION = "수익형 v6.5.5a"
 
 # =========================================================
 # 환경변수
@@ -276,6 +276,7 @@ pending_buy_candidates = {}
 
 paused_until = 0
 pause_reason = ""
+auto_pause_bypass_until = 0
 
 # =========================================================
 # 공유 캐시
@@ -364,7 +365,7 @@ def send_startup_message():
 - 상승 시작형
 - 눌림 반등형
 
-v6.5.5 핵심:
+v6.5.5a 핵심:
 - 추세 지속형 전략 추가
 - 강한 주도주 눌림 후 재가속 탐지
 - 기존 초반형/직전형 유지
@@ -375,6 +376,7 @@ v6.5.5 핵심:
 - 진입 후 힘 확인 강화
 - 연속 실패 시 자동 쉬기
 - 원인 통계 보강
+- 수동 쉬기 해제(/reset_pause)
 - 매도 exit 보정
 
 명령어:
@@ -384,6 +386,7 @@ v6.5.5 핵심:
 - /summary_strategy
 - /today_strategy
 - /btc
+- /reset_pause
 """
     )
 
@@ -1167,8 +1170,19 @@ def clear_auto_pause_if_needed():
         pause_reason = ""
 
 
+def reset_auto_pause_state(bypass_sec=900):
+    global paused_until, pause_reason, auto_pause_bypass_until
+    paused_until = 0
+    pause_reason = ""
+    auto_pause_bypass_until = int(time.time()) + max(int(bypass_sec), 0)
+
+
 def should_pause_auto_buy_now():
     clear_auto_pause_if_needed()
+
+    if auto_pause_bypass_until and time.time() < auto_pause_bypass_until:
+        remain = int(auto_pause_bypass_until - time.time())
+        return False, f"수동 해제 적용 중 / 자동 쉬기 재판정까지 {max(remain, 0)}초"
 
     if not AUTO_PAUSE_ON:
         return False, ""
@@ -2971,12 +2985,30 @@ def btc_command(update, context: CallbackContext):
     send(analyze_btc_flow())
 
 
+def reset_pause_command(update, context: CallbackContext):
+    reset_auto_pause_state(bypass_sec=900)
+    send(
+        f"""
+🛠 자동 쉬기 수동 해제
+
+자동매수 쉬기 상태를 풀었어.
+앞으로 15분 동안은 이전 손실 기록 때문에 바로 다시 쉬지 않게 해둘게.
+
+테스트 확인용으로만 쓰고,
+15분 뒤부터는 다시 원래 쉬기 로직이 작동해.
+"""
+    )
+
+
 def status_command(update, context: CallbackContext):
     parts = []
 
     paused, pause_msg = should_pause_auto_buy_now()
     if paused:
         parts.append("⏸ 자동매수 쉬는 중\n\n" + pause_msg)
+    elif auto_pause_bypass_until and time.time() < auto_pause_bypass_until:
+        remain = int(auto_pause_bypass_until - time.time())
+        parts.append("🛠 자동 쉬기 수동 해제 적용 중\n\n" + f"{max(remain, 0)}초 남음")
 
     if active_positions:
         lines, dust_lines = [], []
@@ -3031,6 +3063,7 @@ dispatcher.add_handler(CommandHandler("today", today_command))
 dispatcher.add_handler(CommandHandler("summary_strategy", summary_strategy_command))
 dispatcher.add_handler(CommandHandler("today_strategy", today_strategy_command))
 dispatcher.add_handler(CommandHandler("btc", btc_command))
+dispatcher.add_handler(CommandHandler("reset_pause", reset_pause_command))
 dispatcher.add_handler(CommandHandler("status", status_command))
 updater.start_polling(drop_pending_updates=True)
 
