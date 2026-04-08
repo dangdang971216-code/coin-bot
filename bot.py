@@ -13,7 +13,7 @@ from telegram.ext import Updater, CommandHandler, CallbackContext
 # =========================================================
 # 버전
 # =========================================================
-BOT_VERSION = "수익형 v6.5.4"
+BOT_VERSION = "수익형 v6.5.5"
 
 # =========================================================
 # 환경변수
@@ -162,6 +162,18 @@ CHASE_CFG = {
     "rsi_max": 72,
     "range_min": 1.60,
     "jump_min": 0.35,
+}
+
+TREND_CONT_CFG = {
+    "trend_change_min": 2.20,
+    "trend_change_max": 9.50,
+    "pullback_max": 2.20,
+    "recovery_min": 0.35,
+    "vol_reaccel_min": 1.45,
+    "rsi_min": 50,
+    "rsi_max": 74,
+    "high_retest_gap_max": 0.80,
+    "extension_max": 0.75,
 }
 
 # PREPUMP 후보 저장용
@@ -344,6 +356,7 @@ def send_startup_message():
 자동매수 허용:
 - 초반 선점형
 - 쏘기 직전형
+- 추세 지속형
 - 급등 돌파형
 - 추격형({'켜짐' if ALLOW_CHASE else '꺼짐'})
 
@@ -351,15 +364,14 @@ def send_startup_message():
 - 상승 시작형
 - 눌림 반등형
 
-v6.5.3 핵심:
-- 자동매수 문턱 소폭 완화
-- 초반형/직전형 우대 강화
+v6.5.5 핵심:
+- 추세 지속형 전략 추가
+- 강한 주도주 눌림 후 재가속 탐지
+- 기존 초반형/직전형 유지
 - 좋은 상승 시작형은 2차확인 후보 허용
 - 후보알림 반복 억제 유지
 - 좋아졌을 때만 강화 알림
 - 늦은 진입 방지 유지
-- TIME_STOP 문구 자연화
-- 공유 캐시
 - 진입 후 힘 확인 강화
 - 연속 실패 시 자동 쉬기
 - 원인 통계 보강
@@ -859,6 +871,8 @@ def dynamic_stop_loss_pct(vol_ratio, range_pct, strategy):
     stop = BASE_STOP_LOSS_PCT
     if strategy in ["PRE_BREAKOUT", "BREAKOUT", "CHASE"]:
         stop -= 0.05
+    elif strategy == "TREND_CONT":
+        stop -= 0.02
     elif strategy == "EARLY":
         stop += 0.10
     if vol_ratio >= 4.0:
@@ -874,6 +888,8 @@ def dynamic_take_profit_pct(vol_ratio, range_pct, strategy):
         tp += 0.5
     elif strategy == "PRE_BREAKOUT":
         tp += 0.8
+    elif strategy == "TREND_CONT":
+        tp += 0.9
     elif strategy == "BREAKOUT":
         tp += 0.7
     elif strategy == "CHASE":
@@ -890,6 +906,8 @@ def dynamic_time_stop_sec(vol_ratio, range_pct, strategy):
         base = 900
     elif strategy == "PRE_BREAKOUT":
         base = 930
+    elif strategy == "TREND_CONT":
+        base = 840
     elif strategy == "BREAKOUT":
         base = 780
     elif strategy == "CHASE":
@@ -918,6 +936,8 @@ def score_entry_bonus(strategy):
         return 1.45
     if strategy == "PRE_BREAKOUT":
         return 1.30
+    if strategy == "TREND_CONT":
+        return 1.05
     if strategy == "BREAKOUT":
         return 0.45
     if strategy == "CHASE":
@@ -942,6 +962,8 @@ def expected_edge_score(strategy, base_signal_score, stop_loss_pct, take_profit_
 
     if strategy in ["EARLY", "PRE_BREAKOUT"] and change_pct <= 1.8:
         score += 0.45
+    if strategy == "TREND_CONT" and 0.3 <= change_pct <= 2.0:
+        score += 0.35
     if strategy == "BREAKOUT" and change_pct >= 2.6:
         score -= 0.55
     if strategy == "CHASE" and change_pct >= 2.8:
@@ -1102,7 +1124,7 @@ def entry_shape_block(strategy, df):
         return False, ""
     if df is None or len(df) < 8:
         return False, ""
-    if strategy in ["EARLY", "PRE_BREAKOUT", "BREAKOUT", "PREPUMP"]:
+    if strategy in ["EARLY", "PRE_BREAKOUT", "TREND_CONT", "BREAKOUT", "PREPUMP"]:
         if is_recent_overheated(df):
             return True, "최근 봉이 너무 과열"
         if is_weak_close_candle(df):
@@ -1402,6 +1424,105 @@ def analyze_pullback_entry(ticker: str, data: dict):
         edge_score=score_v,
         pattern_tags=pattern_info["tags"],
         reason="",
+    )
+
+
+
+def analyze_trend_cont_entry(ticker: str, data: dict):
+    df = data["df_1m"]
+    current_price = data["price"]
+    if df is None or len(df) < 40 or current_price <= 0:
+        return None
+
+    pattern_info = analyze_chart_patterns(df)
+    rsi = safe_float(calculate_rsi(df).iloc[-1])
+    vol_ratio = get_vol_ratio(df, 3, 15)
+    ma5v, ma10v = ma(df, 5), ma(df, 10)
+    if ma5v <= 0 or ma10v <= 0 or ma5v < ma10v:
+        return None
+
+    recent20 = df.tail(20)
+    rise_low = float(recent20["low"].min())
+    rise_high = float(recent20["high"].max())
+    if rise_low <= 0 or rise_high <= rise_low:
+        return None
+
+    trend_change_pct = ((rise_high - rise_low) / rise_low) * 100
+    if trend_change_pct < TREND_CONT_CFG["trend_change_min"] or trend_change_pct > TREND_CONT_CFG["trend_change_max"]:
+        return None
+
+    recent8 = df.tail(8)
+    recent_high = float(recent8["high"].max())
+    recent_low = float(recent8["low"].min())
+    if recent_high <= 0 or recent_low <= 0:
+        return None
+
+    pullback_pct = ((recent_high - current_price) / recent_high) * 100
+    if pullback_pct < 0 or pullback_pct > TREND_CONT_CFG["pullback_max"]:
+        return None
+
+    recovery_pct = get_recent_change_pct(df, 3)
+    if recovery_pct < TREND_CONT_CFG["recovery_min"]:
+        return None
+
+    retest_gap_pct = ((recent_high - current_price) / current_price) * 100
+    if retest_gap_pct < 0 or retest_gap_pct > TREND_CONT_CFG["high_retest_gap_max"]:
+        return None
+
+    extension_pct = ((current_price - recent_high) / recent_high) * 100
+    if extension_pct > TREND_CONT_CFG["extension_max"]:
+        return None
+
+    if rsi < TREND_CONT_CFG["rsi_min"] or rsi > TREND_CONT_CFG["rsi_max"]:
+        return None
+    if vol_ratio < TREND_CONT_CFG["vol_reaccel_min"]:
+        return None
+    if upper_wick_too_large(df):
+        return None
+
+    shape_block, _ = entry_shape_block("TREND_CONT", df)
+    if shape_block:
+        return None
+
+    low_last5 = float(df["low"].tail(5).min())
+    low_prev5 = float(df["low"].tail(10).head(5).min()) if len(df) >= 10 else low_last5
+    if low_last5 < low_prev5 * 0.992:
+        return None
+
+    base_score_v = 6.0 + min(vol_ratio, 4.2) * 0.75 + min(trend_change_pct, 7.0) * 0.28 + min(recovery_pct, 1.5) * 0.9
+    base_score_v += pattern_bonus_score(pattern_info)
+
+    stop_loss_pct = dynamic_stop_loss_pct(vol_ratio, get_range_pct(df, 10), "TREND_CONT")
+    take_profit_pct = dynamic_take_profit_pct(vol_ratio, get_range_pct(df, 10), "TREND_CONT")
+    time_stop_sec = dynamic_time_stop_sec(vol_ratio, get_range_pct(df, 10), "TREND_CONT")
+    edge_score_v = expected_edge_score("TREND_CONT", base_score_v, stop_loss_pct, take_profit_pct, rsi, vol_ratio, recovery_pct, get_range_pct(df, 10))
+
+    return base_signal(
+        ticker=ticker,
+        strategy="TREND_CONT",
+        strategy_label="추세 지속형",
+        current_price=current_price,
+        vol_ratio=vol_ratio,
+        change_pct=recovery_pct,
+        rsi=rsi,
+        range_pct=get_range_pct(df, 10),
+        signal_score=base_score_v,
+        edge_score=edge_score_v,
+        stop_loss_pct=stop_loss_pct,
+        take_profit_pct=take_profit_pct,
+        time_stop_sec=time_stop_sec,
+        invalid_break_level=recent_low,
+        pattern_tags=pattern_info["tags"],
+        reference_high=recent_high,
+        reference_low=recent_low,
+        reason=(
+            f"- 오늘 강한 흐름이 이어지는 코인이야\n"
+            f"- 잠깐 눌렸다가 다시 위로 가려는 모습이 보여\n"
+            f"- 거래량 재가속 {vol_ratio:.2f}배\n"
+            f"- 직전 고점 재도전 거리 {retest_gap_pct:.2f}%\n"
+            f"- RSI {rsi:.2f}"
+            f"{pattern_reason_suffix(pattern_info)}"
+        ),
     )
 
 
@@ -1888,6 +2009,8 @@ def strategy_allowed_in_regime(strategy, regime):
         return False
     if strategy == "BREAKOUT" and not regime.get("allow_breakout", True):
         return False
+    if strategy == "TREND_CONT" and regime["name"] == "WEAK":
+        return False
     if strategy == "CHASE" and regime["name"] in ["SIDEWAYS", "WEAK"]:
         return False
     return True
@@ -1897,7 +2020,7 @@ def should_auto_buy_signal(signal, regime=None):
     strategy = signal["strategy"]
     edge = float(signal.get("edge_score", 0))
     tp = float(signal.get("take_profit_pct", 0))
-    if strategy not in ["EARLY", "PRE_BREAKOUT", "BREAKOUT", "CHASE"]:
+    if strategy not in ["EARLY", "PRE_BREAKOUT", "TREND_CONT", "BREAKOUT", "CHASE"]:
         return False
     if strategy == "CHASE" and not ALLOW_CHASE:
         return False
@@ -1915,7 +2038,7 @@ def candidate_eligible_for_store(signal, regime):
         return False
     strategy = signal["strategy"]
 
-    if strategy in ["EARLY", "PRE_BREAKOUT", "BREAKOUT", "CHASE"]:
+    if strategy in ["EARLY", "PRE_BREAKOUT", "TREND_CONT", "BREAKOUT", "CHASE"]:
         if strategy == "CHASE" and not ALLOW_CHASE:
             return False
         if not strategy_allowed_in_regime(strategy, regime):
@@ -1994,7 +2117,7 @@ def candidate_promote_ok(candidate, current_signal, regime):
         return False, "쿨다운"
 
     strategy = current_signal["strategy"]
-    if strategy not in ["EARLY", "PRE_BREAKOUT", "BREAKOUT", "CHASE"]:
+    if strategy not in ["EARLY", "PRE_BREAKOUT", "TREND_CONT", "BREAKOUT", "CHASE"]:
         return False, "승격 전략 아님"
     if not strategy_allowed_in_regime(strategy, regime):
         return False, "장 필터"
@@ -2066,7 +2189,7 @@ def process_pending_buy_promotions(shared_cache=None):
 
         data = cache[ticker]
         current_signal = None
-        for analyzer in [analyze_early_entry, analyze_pre_breakout_entry, analyze_breakout_entry, analyze_chase_entry]:
+        for analyzer in [analyze_early_entry, analyze_pre_breakout_entry, analyze_trend_cont_entry, analyze_breakout_entry, analyze_chase_entry]:
             try:
                 sig = analyzer(ticker, data)
                 if sig:
@@ -2126,8 +2249,9 @@ def get_strategy_rank(strategy: str) -> int:
         "PULLBACK": 2,
         "EARLY": 3,
         "PRE_BREAKOUT": 4,
-        "BREAKOUT": 5,
-        "CHASE": 6,
+        "TREND_CONT": 5,
+        "BREAKOUT": 6,
+        "CHASE": 7,
     }
     return rank_map.get(strategy, 0)
 
@@ -2205,8 +2329,8 @@ def signal_score(signal):
 
 def collect_signals_from_cache(cache, auto_only=False, regime=None):
     results = []
-    auto_analyzers = [analyze_early_entry, analyze_pre_breakout_entry, analyze_breakout_entry, analyze_chase_entry]
-    watch_analyzers = [analyze_early_entry, analyze_pre_breakout_entry, analyze_breakout_entry, analyze_prepump_entry, analyze_pullback_entry]
+    auto_analyzers = [analyze_early_entry, analyze_pre_breakout_entry, analyze_trend_cont_entry, analyze_breakout_entry, analyze_chase_entry]
+    watch_analyzers = [analyze_early_entry, analyze_pre_breakout_entry, analyze_trend_cont_entry, analyze_breakout_entry, analyze_prepump_entry, analyze_pullback_entry]
     analyzers = auto_analyzers if auto_only else watch_analyzers
 
     for ticker, data in cache.items():
@@ -2531,6 +2655,12 @@ def post_entry_strength_fail(ticker, pos, current_price):
         if current_price < invalid_break_level and pnl_pct < POST_ENTRY_MIN_PROGRESS_PCT:
             return True, "돌파 후 기준선 위에 못 안착했어"
 
+    if strategy == "TREND_CONT":
+        if vol_ratio_now < POST_ENTRY_MIN_VOL_RATIO and pnl_pct < POST_ENTRY_MIN_PROGRESS_PCT:
+            return True, "추세 지속 기대였는데 반등 거래량이 다시 약해졌어"
+        if pnl_pct <= POST_ENTRY_FAIL_BELOW_ENTRY_PCT:
+            return True, "추세 지속 자리였는데 진입 후 바로 힘이 약했어"
+
     return False, ""
 
 def should_scenario_fail_exit(ticker, pos, current_price):
@@ -2571,6 +2701,9 @@ def should_scenario_fail_exit(ticker, pos, current_price):
 
     if strategy == "PRE_BREAKOUT" and pnl_pct <= -0.28 and vol_ratio_now < 1.0:
         return True, "직전형 기대였는데 눌린 뒤 힘이 약했어"
+
+    if strategy == "TREND_CONT" and pnl_pct <= -0.32 and vol_ratio_now < 1.0:
+        return True, "추세 지속 기대였는데 눌림 뒤 재가속이 약했어"
 
     return False, ""
 
