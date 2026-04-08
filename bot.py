@@ -280,6 +280,7 @@ pending_buy_candidates = {}
 paused_until = 0
 pause_reason = ""
 auto_pause_bypass_until = 0
+auto_pause_reset_ignore_before = 0
 
 # =========================================================
 # 공유 캐시
@@ -368,7 +369,7 @@ def send_startup_message():
 - 상승 시작형
 - 눌림 반등형
 
-v6.5.5a 핵심:
+v6.5.5c 핵심:
 - 추세 지속형 전략 유지
 - 추세 지속형 고점 근접 진입 보정
 - 강한 주도주 눌림 후 재가속 탐지
@@ -1143,15 +1144,20 @@ def get_recent_closed_logs_window(sec=AUTO_PAUSE_LOOKBACK_SEC):
     now_ts = int(time.time())
     return [
         x for x in trade_logs
-        if x.get("type") in CLOSE_TYPES and now_ts - int(x.get("time", 0)) <= sec
+        if x.get("type") in CLOSE_TYPES
+        and int(x.get("time", 0)) >= int(auto_pause_reset_ignore_before or 0)
+        and now_ts - int(x.get("time", 0)) <= sec
     ]
 
 
 def get_recent_loss_streak():
     streak = 0
+    ignore_before = int(auto_pause_reset_ignore_before or 0)
     for x in reversed(trade_logs):
         if x.get("type") not in CLOSE_TYPES:
             continue
+        if int(x.get("time", 0)) < ignore_before:
+            break
         if float(x.get("pnl_pct", 0)) <= 0:
             streak += 1
         else:
@@ -1175,10 +1181,12 @@ def clear_auto_pause_if_needed():
 
 
 def reset_auto_pause_state(bypass_sec=900):
-    global paused_until, pause_reason, auto_pause_bypass_until
+    global paused_until, pause_reason, auto_pause_bypass_until, auto_pause_reset_ignore_before
+    now_ts = int(time.time())
     paused_until = 0
     pause_reason = ""
-    auto_pause_bypass_until = int(time.time()) + max(int(bypass_sec), 0)
+    auto_pause_bypass_until = now_ts + max(int(bypass_sec), 0)
+    auto_pause_reset_ignore_before = now_ts
 
 
 def should_pause_auto_buy_now():
@@ -3003,10 +3011,13 @@ def reset_pause_command(update, context: CallbackContext):
 🛠 자동 쉬기 수동 해제
 
 자동매수 쉬기 상태를 풀었어.
-앞으로 15분 동안은 이전 손실 기록 때문에 바로 다시 쉬지 않게 해둘게.
+연속 손실 기록도 지금 시점 기준으로 초기화했어.
 
-테스트 확인용으로만 쓰고,
-15분 뒤부터는 다시 원래 쉬기 로직이 작동해.
+앞으로 15분 동안은 새 버전 테스트용으로
+이전 손실 기록 때문에 바로 다시 쉬지 않게 해둘게.
+
+15분 뒤부터는 새로 쌓이는 기록 기준으로만
+원래 쉬기 로직이 다시 작동해.
 """
     )
 
