@@ -13,7 +13,7 @@ from telegram.ext import Updater, CommandHandler, CallbackContext
 # =========================================================
 # 버전
 # =========================================================
-BOT_VERSION = "수익형 v6.5.8"
+BOT_VERSION = "수익형 v6.5.8b"
 
 # =========================================================
 # 환경변수
@@ -255,8 +255,8 @@ USE_PULLBACK_RECHECK_BONUS = True
 PENDING_BUY_ON = True
 PENDING_BUY_MAX_ITEMS = 6
 PENDING_BUY_TTL_SEC = 165
-PENDING_BUY_MIN_EDGE = 6.3
-PENDING_BUY_MIN_SCORE = 5.9
+PENDING_BUY_MIN_EDGE = 5.7
+PENDING_BUY_MIN_SCORE = 5.3
 PENDING_BUY_RECHECK_MIN_SEC = 26
 
 PROMOTE_RECOVERY_TO_HIGH_PCT = 99.7
@@ -266,10 +266,10 @@ PROMOTE_MAX_BREAKOUT_EXTENSION_PCT = 0.45
 # =========================================================
 # watch 재알림 제어
 # =========================================================
-WATCH_RENOTICE_SEC = 1800
-WATCH_VOL_IMPROVE_DELTA = 1.0
-WATCH_CHANGE_IMPROVE_DELTA = 0.9
-WATCH_SCORE_IMPROVE_DELTA = 1.5
+WATCH_RENOTICE_SEC = 1200
+WATCH_VOL_IMPROVE_DELTA = 0.75
+WATCH_CHANGE_IMPROVE_DELTA = 0.65
+WATCH_SCORE_IMPROVE_DELTA = 1.1
 WATCH_RENOTICE_MAX_PER_TICKER = 2
 
 # =========================================================
@@ -385,13 +385,13 @@ def send_startup_message():
 - 상승 시작형
 - 눌림 반등형
 
-v6.5.8 핵심:
+v6.5.8b 핵심:
 - S/A/B 등급제로 좋은 거래 특별대우
 - S급은 목표 수익 / 시간정리 / 본절보호를 더 넓게 운영
 - 횡보/혼조 장의 애매한 자동매수는 더 보수화
 - 초반 선점형 품질 필터 유지 강화
 - 추세 지속형 고점 근접 진입 보정 유지
-- 후보 재확인 반복 알림 축소 유지
+- 후보 알림 문턱 완화 / 재확인 반복 알림 축소 유지
 - 연속 실패 시 자동 쉬기
 - 수동 쉬기 해제(/reset_pause)
 - 매도 exit 보정
@@ -2204,6 +2204,18 @@ def strategy_allowed_in_regime(strategy, regime):
     return True
 
 
+def watch_strategy_allowed_in_regime(strategy, regime):
+    if not REGIME_FILTER_ON:
+        return True
+    if regime["name"] == "BLOCK":
+        return False
+    if strategy == "CHASE":
+        return False
+    if regime["name"] == "WEAK" and strategy == "BREAKOUT":
+        return False
+    return True
+
+
 def should_auto_buy_signal(signal, regime=None):
     strategy = signal["strategy"]
     edge = float(signal.get("edge_score", 0))
@@ -2589,8 +2601,13 @@ def collect_signals_from_cache(cache, auto_only=False, regime=None):
                 if not signal:
                     continue
                 signal = apply_trade_tier_adjustments(signal, regime=regime)
-                if regime and not strategy_allowed_in_regime(signal["strategy"], regime):
-                    continue
+                if regime:
+                    if auto_only:
+                        if not strategy_allowed_in_regime(signal["strategy"], regime):
+                            continue
+                    else:
+                        if not watch_strategy_allowed_in_regime(signal["strategy"], regime):
+                            continue
                 if auto_only and not should_auto_buy_signal(signal, regime=regime):
                     continue
                 results.append(signal)
@@ -2622,7 +2639,7 @@ def scan_watchlist(shared_cache=None):
     update_pending_buy_candidates_from_results(results, regime)
     unique_results = dedupe_best_signal_per_ticker(results, key_name="signal_score")
     unique_results.sort(key=lambda x: signal_priority_value(x), reverse=True)
-    top = unique_results[:5]
+    top = unique_results[:7]
 
     new_lines, upgrade_lines, renotice_lines = [], [], []
     now_ts = time.time()
