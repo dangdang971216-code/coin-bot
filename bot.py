@@ -13,7 +13,7 @@ from telegram.ext import Updater, CommandHandler, CallbackContext
 # =========================================================
 # 버전
 # =========================================================
-BOT_VERSION = "수익형 v6.5.8e"
+BOT_VERSION = "수익형 v6.5.8f"
 
 # =========================================================
 # 환경변수
@@ -255,8 +255,8 @@ USE_PULLBACK_RECHECK_BONUS = True
 PENDING_BUY_ON = True
 PENDING_BUY_MAX_ITEMS = 6
 PENDING_BUY_TTL_SEC = 165
-PENDING_BUY_MIN_EDGE = 4.5
-PENDING_BUY_MIN_SCORE = 4.1
+PENDING_BUY_MIN_EDGE = 4.2
+PENDING_BUY_MIN_SCORE = 3.8
 PENDING_BUY_RECHECK_MIN_SEC = 26
 
 PROMOTE_RECOVERY_TO_HIGH_PCT = 99.7
@@ -266,11 +266,11 @@ PROMOTE_MAX_BREAKOUT_EXTENSION_PCT = 0.45
 # =========================================================
 # watch 재알림 제어
 # =========================================================
-WATCH_RENOTICE_SEC = 480
-WATCH_VOL_IMPROVE_DELTA = 0.25
-WATCH_CHANGE_IMPROVE_DELTA = 0.22
-WATCH_SCORE_IMPROVE_DELTA = 0.40
-WATCH_RENOTICE_MAX_PER_TICKER = 4
+WATCH_RENOTICE_SEC = 360
+WATCH_VOL_IMPROVE_DELTA = 0.18
+WATCH_CHANGE_IMPROVE_DELTA = 0.16
+WATCH_SCORE_IMPROVE_DELTA = 0.30
+WATCH_RENOTICE_MAX_PER_TICKER = 5
 
 # =========================================================
 # 리포트 간격
@@ -385,13 +385,13 @@ def send_startup_message():
 - 상승 시작형
 - 눌림 반등형
 
-v6.5.8e 핵심:
+v6.5.8f 핵심:
 - S/A/B 등급제로 좋은 거래 특별대우
 - S급은 목표 수익 / 시간정리 / 본절보호를 더 넓게 운영
 - 횡보/혼조 장의 애매한 자동매수는 더 보수화
 - 초반 선점형 품질 필터 유지 강화
 - 추세 지속형 고점 근접 진입 보정 유지
-- 후보 알림 문턱 완화 / 재확인 반복 알림 축소 유지 / 스캔 디버그 추가
+- 후보 알림 추가 완화 / 쉬기중에도 디버그 표시 / scan_debug 응답 보장
 - 연속 실패 시 자동 쉬기
 - 수동 쉬기 해제(/reset_pause)
 - 매도 exit 보정
@@ -2649,13 +2649,13 @@ def build_leader_watch_candidates(cache, regime):
             turnover_rank = int(safe_float(data.get("turnover_rank", 999), 999))
             surge_rank = int(safe_float(data.get("surge_rank", 999), 999))
 
-            if leader_score < 0.8:
+            if leader_score < 0.5:
                 continue
-            if vol_ratio < 1.00 and change_5 < 0.30:
+            if vol_ratio < 0.95 and change_5 < 0.22:
                 continue
-            if change_3 < 0.10 and change_5 < 0.30:
+            if change_3 < 0.05 and change_5 < 0.22:
                 continue
-            if range_pct < 0.18 and vol_ratio < 1.05:
+            if range_pct < 0.12 and vol_ratio < 1.00:
                 continue
             if upper_wick_too_large(df) and change_3 < 0.90:
                 continue
@@ -2706,7 +2706,7 @@ def build_leader_watch_candidates(cache, regime):
             continue
 
     fallback.sort(key=lambda x: (safe_float(x.get("leader_score", 0)) * 1.2) + safe_float(x.get("edge_score", 0)), reverse=True)
-    return fallback[:15]
+    return fallback[:18]
 
 
 def scan_watchlist(shared_cache=None):
@@ -2727,7 +2727,7 @@ def scan_watchlist(shared_cache=None):
         update_pending_buy_candidates_from_results(real_results, regime)
     unique_results = dedupe_best_signal_per_ticker(results, key_name="signal_score")
     unique_results.sort(key=lambda x: signal_priority_value(x), reverse=True)
-    top = unique_results[:15]
+    top = unique_results[:18]
 
     new_lines, upgrade_lines, renotice_lines = [], [], []
     now_ts = time.time()
