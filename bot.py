@@ -13,7 +13,7 @@ from telegram.ext import Updater, CommandHandler, CallbackContext
 # =========================================================
 # 버전
 # =========================================================
-BOT_VERSION = "수익형 v6.5.8b"
+BOT_VERSION = "수익형 v6.5.8c"
 
 # =========================================================
 # 환경변수
@@ -255,8 +255,8 @@ USE_PULLBACK_RECHECK_BONUS = True
 PENDING_BUY_ON = True
 PENDING_BUY_MAX_ITEMS = 6
 PENDING_BUY_TTL_SEC = 165
-PENDING_BUY_MIN_EDGE = 5.7
-PENDING_BUY_MIN_SCORE = 5.3
+PENDING_BUY_MIN_EDGE = 5.2
+PENDING_BUY_MIN_SCORE = 4.8
 PENDING_BUY_RECHECK_MIN_SEC = 26
 
 PROMOTE_RECOVERY_TO_HIGH_PCT = 99.7
@@ -266,10 +266,10 @@ PROMOTE_MAX_BREAKOUT_EXTENSION_PCT = 0.45
 # =========================================================
 # watch 재알림 제어
 # =========================================================
-WATCH_RENOTICE_SEC = 1200
-WATCH_VOL_IMPROVE_DELTA = 0.75
-WATCH_CHANGE_IMPROVE_DELTA = 0.65
-WATCH_SCORE_IMPROVE_DELTA = 1.1
+WATCH_RENOTICE_SEC = 900
+WATCH_VOL_IMPROVE_DELTA = 0.55
+WATCH_CHANGE_IMPROVE_DELTA = 0.45
+WATCH_SCORE_IMPROVE_DELTA = 0.8
 WATCH_RENOTICE_MAX_PER_TICKER = 2
 
 # =========================================================
@@ -2626,6 +2626,87 @@ def dedupe_best_signal_per_ticker(results, key_name="signal_score"):
     return list(best_per_ticker.values())
 
 
+def build_leader_watch_candidates(cache, regime):
+    fallback = []
+    for ticker, data in cache.items():
+        try:
+            df = data.get("df_1m")
+            if df is None or len(df) < 20:
+                continue
+            current_price = safe_float(data.get("price", 0))
+            if current_price <= 0:
+                continue
+
+            leader_score = safe_float(data.get("leader_score", 0))
+            vol_ratio = get_vol_ratio(df, 2, 10)
+            change_1 = get_recent_change_pct(df, 1)
+            change_3 = get_recent_change_pct(df, 3)
+            change_5 = get_recent_change_pct(df, 5)
+            range_pct = get_range_pct(df, 10)
+            rsi = get_rsi(df, 14)
+            turnover_rank = int(safe_float(data.get("turnover_rank", 999), 999))
+            surge_rank = int(safe_float(data.get("surge_rank", 999), 999))
+
+            if leader_score < 2.0:
+                continue
+            if vol_ratio < 1.15 and change_5 < 0.55:
+                continue
+            if change_3 < 0.25 and change_5 < 0.55:
+                continue
+            if range_pct < 0.35 and vol_ratio < 1.45:
+                continue
+            if upper_wick_too_large(df) and change_3 < 0.90:
+                continue
+
+            pattern_tags = []
+            if has_higher_lows(df):
+                pattern_tags.append("저점높임")
+            if big_bull_half_hold(df):
+                pattern_tags.append("양봉절반유지")
+            if fake_breakdown_recovery(df):
+                pattern_tags.append("하락복구")
+
+            leader_edge = max(4.2, leader_score + min(max(change_5, 0), 3.0) * 0.75 + min(vol_ratio, 4.0) * 0.55)
+
+            label = "주도주 후보형"
+            if change_5 >= 1.0 and vol_ratio >= 1.8:
+                label = "상승 시작형"
+            elif vol_ratio >= 2.4 and change_3 >= 0.7:
+                label = "주도주 가속형"
+
+            fallback.append(make_signal(
+                ticker=ticker,
+                strategy="LEADER_WATCH",
+                strategy_label=label,
+                current_price=current_price,
+                entry_price=current_price,
+                support_price=get_recent_low(df, 6),
+                resistance_price=get_recent_high(df, 20),
+                stop_price=current_price * 0.985,
+                target_price=current_price * 1.022,
+                reason_text=f"주도주 점수 {leader_score:.2f} / 거래량 {vol_ratio:.2f}배 / 5분상승 {change_5:.2f}%",
+                warning_text="후보 알림 전용 / 자동매수 아님",
+                change_pct=max(change_3, change_5),
+                vol_ratio=vol_ratio,
+                rsi=rsi,
+                signal_score=leader_edge,
+                edge_score=leader_edge,
+                leader_score=leader_score + (0.25 if turnover_rank <= 20 else 0) + (0.20 if surge_rank <= 20 else 0),
+                stop_loss_pct=-1.5,
+                take_profit_pct=2.2,
+                time_stop_sec=900,
+                pattern_tags=pattern_tags,
+                reference_high=get_recent_high(df, 20),
+                reference_low=get_recent_low(df, 20),
+                trade_tier="B",
+            ))
+        except Exception:
+            continue
+
+    fallback.sort(key=lambda x: (safe_float(x.get("leader_score", 0)) * 1.2) + safe_float(x.get("edge_score", 0)), reverse=True)
+    return fallback[:8]
+
+
 def scan_watchlist(shared_cache=None):
     cache = shared_cache or build_shared_market_cache()
     if not cache:
@@ -2633,13 +2714,18 @@ def scan_watchlist(shared_cache=None):
 
     regime = get_market_regime()
     results = collect_signals_from_cache(cache, auto_only=False, regime=regime)
+    fallback_results = build_leader_watch_candidates(cache, regime)
+    if fallback_results:
+        results.extend(fallback_results)
     if not results:
         return
 
-    update_pending_buy_candidates_from_results(results, regime)
+    real_results = [x for x in results if x.get("strategy") != "LEADER_WATCH"]
+    if real_results:
+        update_pending_buy_candidates_from_results(real_results, regime)
     unique_results = dedupe_best_signal_per_ticker(results, key_name="signal_score")
     unique_results.sort(key=lambda x: signal_priority_value(x), reverse=True)
-    top = unique_results[:7]
+    top = unique_results[:10]
 
     new_lines, upgrade_lines, renotice_lines = [], [], []
     now_ts = time.time()
@@ -3307,7 +3393,7 @@ def status_command(update, context: CallbackContext):
         sorted_candidates = sorted(pending_buy_candidates.values(), key=lambda x: (safe_float(x.get("leader_score", 0)) * 0.8) + safe_float(x.get("edge_score", 0)), reverse=True)[:6]
         for item in sorted_candidates:
             age = int(time.time() - safe_float(item.get("created_at", 0)))
-            c_lines.append(f"• {item['ticker']} / 방식 {item.get('strategy_label','?')} / 후보대기 {age}초 / 기대점수 {safe_float(item.get('edge_score', 0)):.2f}")
+            c_lines.append(f"• {item['ticker']} / 방식 {item.get('strategy_label','?')} / 후보대기 {age}초 / 기대점수 {safe_float(item.get('edge_score', 0)):.2f} / 주도주 {safe_float(item.get('leader_score', 0)):.2f}")
         parts.append("🕒 2차 확인 후보\n\n" + "\n".join(c_lines))
 
     if pending_sells:
