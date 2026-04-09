@@ -1082,9 +1082,103 @@ def get_pending_seen_count(ticker: str):
         return int(pending_buy_candidates[ticker].get("seen_count", 0))
     return 0
 
-# FULL FILE CONTINUES BELOW EXACTLY AS NEEDED FOR THE BOT.
-# To keep this tool call manageable, the complete file is saved directly.
 
+
+# =========================================================
+# 호환 / 누락 보정
+# =========================================================
+def get_rsi(df, period=14):
+    try:
+        series = calculate_rsi(df, period)
+        return float(series.iloc[-1]) if series is not None and len(series) > 0 else 50.0
+    except Exception:
+        return 50.0
+
+
+TRADE_TIER_S_ALLOWED = {"EARLY", "PRE_BREAKOUT", "TREND_CONT", "BREAKOUT"}
+TRADE_TIER_S_EDGE_MIN = 10.2
+TRADE_TIER_S_VOL_MIN = 2.4
+TRADE_TIER_S_BTC_OK = {"NORMAL", "STRONG_UP", "SIDEWAYS"}
+
+TRADE_TIER_A_EDGE_MIN = 8.8
+TRADE_TIER_A_VOL_MIN = 1.8
+
+S_TP_BONUS_PCT = 0.55
+S_TIME_STOP_BONUS_SEC = 180
+S_BREAKEVEN_TRIGGER_PCT = 2.0
+S_BREAKEVEN_BUFFER_PCT = 0.22
+S_TRAIL_START_PCT = 3.2
+S_TRAIL_BACKOFF_PCT = 1.00
+
+A_TP_BONUS_PCT = 0.25
+A_TIME_STOP_BONUS_SEC = 90
+A_BREAKEVEN_TRIGGER_PCT = 1.85
+A_BREAKEVEN_BUFFER_PCT = 0.18
+A_TRAIL_START_PCT = 2.9
+A_TRAIL_BACKOFF_PCT = 1.08
+
+
+def has_higher_lows(df, bars=12):
+    return detect_higher_lows(df, bars=bars)
+
+
+def big_bull_half_hold(df, bars=10):
+    return detect_big_bull_half_hold(df, bars=bars)
+
+
+def fake_breakdown_recovery(df, bars=10):
+    return detect_fake_breakdown_recovery(df, bars=bars)
+
+
+def make_signal(
+    ticker,
+    strategy,
+    strategy_label,
+    current_price,
+    vol_ratio,
+    change_pct,
+    rsi=50.0,
+    range_pct=0.0,
+    score=0.0,
+    edge_score=0.0,
+    leader_score=0.0,
+    stop_loss_pct=0.0,
+    take_profit_pct=0.0,
+    time_stop_sec=0,
+    pattern_tags=None,
+    reason="",
+):
+    return base_signal(
+        ticker=ticker,
+        strategy=strategy,
+        strategy_label=strategy_label,
+        current_price=current_price,
+        vol_ratio=vol_ratio,
+        change_pct=change_pct,
+        rsi=rsi,
+        range_pct=range_pct,
+        signal_score=score,
+        edge_score=edge_score,
+        leader_score=leader_score,
+        stop_loss_pct=stop_loss_pct,
+        take_profit_pct=take_profit_pct,
+        time_stop_sec=time_stop_sec,
+        pattern_tags=pattern_tags or [],
+        reason=reason,
+    )
+
+
+def update_scan_debug_snapshot(cache):
+    global last_scan_debug_snapshot, last_scan_debug_snapshot_time, last_scan_debug_note
+    try:
+        results, note = get_scan_debug_candidates()
+        last_scan_debug_snapshot = results or []
+        last_scan_debug_snapshot_time = time.time()
+        last_scan_debug_note = note or ""
+    except Exception as e:
+        last_scan_debug_snapshot = []
+        last_scan_debug_snapshot_time = time.time()
+        last_scan_debug_note = f"snapshot error: {e}"
 
 
 def get_market_universe(force=False):
@@ -2683,6 +2777,7 @@ def dedupe_best_signal_per_ticker(results, key_name="signal_score"):
 
 
 
+
 def build_leader_watch_candidates(cache, regime):
     fallback = []
     for ticker, data in cache.items():
@@ -2690,17 +2785,18 @@ def build_leader_watch_candidates(cache, regime):
             df = data.get("df_1m")
             if df is None or len(df) < 20:
                 continue
+
             current_price = safe_float(data.get("price", 0))
             if current_price <= 0:
                 continue
 
             leader_score = safe_float(data.get("leader_score", 0))
-            vol_ratio = safe_float(data.get("vol_ratio", data.get("vol_ratio_1m", 0))) or get_vol_ratio(df, 3, 15)
+            vol_ratio = safe_float(data.get("vol_ratio_1m", data.get("vol_ratio", 0))) or get_vol_ratio(df, 3, 15)
             change_1 = safe_float(data.get("change_1", 0))
             change_3 = safe_float(data.get("change_3", 0))
             change_5 = safe_float(data.get("change_5", 0))
             range_pct = safe_float(data.get("range_pct_1m", 0)) or get_range_pct(df, 10)
-            rsi = safe_float(data.get("rsi", data.get("rsi_1m", 50))) or get_rsi(df, 14)
+            rsi = safe_float(data.get("rsi_1m", data.get("rsi", 50))) or get_rsi(df, 14)
             turnover_rank = int(safe_float(data.get("turnover_rank", 999), 999))
             surge_rank = int(safe_float(data.get("surge_rank", 999), 999))
 
@@ -2723,7 +2819,10 @@ def build_leader_watch_candidates(cache, regime):
             if fake_breakdown_recovery(df):
                 pattern_tags.append("하락복구")
 
-            leader_edge = max(4.2, leader_score + min(max(change_5, 0), 3.0) * 0.75 + min(vol_ratio, 4.0) * 0.55)
+            leader_edge = max(
+                4.2,
+                leader_score + min(max(change_5, 0), 3.0) * 0.75 + min(vol_ratio, 4.0) * 0.55,
+            )
 
             label = "주도주 후보형"
             if change_5 >= 1.0 and vol_ratio >= 1.8:
@@ -2731,28 +2830,33 @@ def build_leader_watch_candidates(cache, regime):
             elif vol_ratio >= 2.4 and change_3 >= 0.7:
                 label = "주도주 가속형"
 
-            fallback.append(make_signal(
-                ticker=ticker,
-                strategy="LEADER_WATCH",
-                strategy_label=label,
-                current_price=current_price,
-                vol_ratio=vol_ratio,
-                change_pct=max(change_1, change_3, change_5),
-                rsi=rsi,
-                range_pct=range_pct,
-                score=max(5.6, leader_score + max(change_5, 0) * 0.9 + min(vol_ratio, 4.0) * 0.65),
-                edge_score=leader_edge,
-                leader_score=leader_score,
-                stop_loss_pct=-1.4,
-                take_profit_pct=4.2,
-                time_stop_sec=720,
-                pattern_tags=pattern_tags,
-                reason=f"주도주 점수 {leader_score:.2f} / 5분상승 {change_5:.2f}% / 거래량 {vol_ratio:.2f}배 / 순위 T{turnover_rank}/S{surge_rank}",
-            ))
+            fallback.append(
+                make_signal(
+                    ticker=ticker,
+                    strategy="LEADER_WATCH",
+                    strategy_label=label,
+                    current_price=current_price,
+                    vol_ratio=vol_ratio,
+                    change_pct=max(change_1, change_3, change_5),
+                    rsi=rsi,
+                    range_pct=range_pct,
+                    score=max(5.6, leader_score + max(change_5, 0) * 0.9 + min(vol_ratio, 4.0) * 0.65),
+                    edge_score=leader_edge,
+                    leader_score=leader_score,
+                    stop_loss_pct=-1.4,
+                    take_profit_pct=4.2,
+                    time_stop_sec=720,
+                    pattern_tags=pattern_tags,
+                    reason=f"주도주 점수 {leader_score:.2f} / 5분상승 {change_5:.2f}% / 거래량 {vol_ratio:.2f}배 / 순위 T{turnover_rank}/S{surge_rank}",
+                )
+            )
         except Exception:
             continue
 
-    fallback.sort(key=lambda x: (safe_float(x.get("leader_score", 0)) * 1.2) + safe_float(x.get("edge_score", 0)), reverse=True)
+    fallback.sort(
+        key=lambda x: (safe_float(x.get("leader_score", 0)) * 1.2) + safe_float(x.get("edge_score", 0)),
+        reverse=True,
+    )
     return fallback[:18]
 
 
@@ -2949,6 +3053,7 @@ def find_last_open_buy_log(ticker):
     return None
 
 
+
 def recover_positions_from_exchange():
     global active_positions
     if active_positions:
@@ -2966,6 +3071,7 @@ def recover_positions_from_exchange():
             last_buy = find_last_open_buy_log(ticker)
             if not last_buy:
                 continue
+
             qty = get_balance(ticker)
             price = get_price(ticker)
             if qty <= 0 or price <= 0 or qty * price < DUST_KEEP_MIN_KRW:
@@ -2981,6 +3087,8 @@ def recover_positions_from_exchange():
             reason = last_buy.get("reason", "이전 BUY 로그 기반 복구")
             entered_at = int(last_buy.get("time", int(time.time())))
             used_krw = float(last_buy.get("used_krw", qty * entry_price))
+            leader_score = float(last_buy.get("leader_score", 0))
+            trade_tier = last_buy.get("trade_tier", "B")
 
             active_positions[ticker] = {
                 "ticker": ticker,
@@ -3004,6 +3112,14 @@ def recover_positions_from_exchange():
                 "invalid_break_level": safe_float(last_buy.get("invalid_break_level", 0)),
                 "entry_strategy_snapshot": strategy,
                 "pattern_tags": last_buy.get("pattern_tags", []),
+                "entry_regime": last_buy.get("entry_regime", "UNKNOWN"),
+                "from_pending_buy": bool(last_buy.get("from_pending_buy", False)),
+                "max_profit_pct": 0.0,
+                "max_drawdown_pct": 0.0,
+                "breakeven_trigger_pct": last_buy.get("breakeven_trigger_pct", BREAKEVEN_TRIGGER_PCT),
+                "breakeven_buffer_pct": last_buy.get("breakeven_buffer_pct", BREAKEVEN_BUFFER_PCT),
+                "trail_start_pct": last_buy.get("trail_start_pct", TRAIL_START_PCT),
+                "trail_backoff_pct": last_buy.get("trail_backoff_pct", TRAIL_BACKOFF_PCT),
             }
             recovered += 1
         except Exception:
@@ -3012,7 +3128,6 @@ def recover_positions_from_exchange():
     if recovered > 0:
         save_positions()
         send(f"♻️ 포지션 복구 완료\n최근 BUY 로그 기준으로 복구된 코인 수: {recovered}")
-
 
 
 def update_position_run_stats(pos, pnl_pct):
@@ -3449,7 +3564,7 @@ def get_scan_debug_candidates():
                     change_1 = safe_float(data.get("change_1", 0))
                     change_3 = safe_float(data.get("change_3", 0))
                     change_5 = safe_float(data.get("change_5", 0))
-                    vol_ratio = safe_float(data.get("vol_ratio", data.get("vol_ratio_1m", 0)))
+                    vol_ratio = safe_float(data.get("vol_ratio_1m", data.get("vol_ratio", 0)))
                     leader = safe_float(data.get("leader_score", 0))
                     turnover = safe_float(data.get("turnover", 0))
                     rsi = safe_float(data.get("rsi", data.get("rsi_1m", 50)))
@@ -3610,76 +3725,4 @@ def status_command(update, context: CallbackContext):
 
     if pending_buy_candidates:
         c_lines = []
-        sorted_candidates = sorted(pending_buy_candidates.values(), key=lambda x: (safe_float(x.get("leader_score", 0)) * 0.8) + safe_float(x.get("edge_score", 0)), reverse=True)[:6]
-        for item in sorted_candidates:
-            age = int(time.time() - safe_float(item.get("created_at", 0)))
-            c_lines.append(f"• {item['ticker']} / 방식 {item.get('strategy_label','?')} / 후보대기 {age}초 / 기대점수 {safe_float(item.get('edge_score', 0)):.2f} / 주도주 {safe_float(item.get('leader_score', 0)):.2f}")
-        parts.append("🕒 2차 확인 후보\n\n" + "\n".join(c_lines))
-
-    if pending_sells:
-        p = ["⚠️ 매도 확인 대기중"]
-        for ticker in pending_sells.keys():
-            p.append(f"• {ticker}")
-        parts.append("\n".join(p))
-
-    send("\n\n".join(parts))
-
-
-updater = Updater(token=TELEGRAM_TOKEN, use_context=True)
-dispatcher = updater.dispatcher
-dispatcher.add_handler(CommandHandler("summary", summary_command))
-dispatcher.add_handler(CommandHandler("today", today_command))
-dispatcher.add_handler(CommandHandler("summary_strategy", summary_strategy_command))
-dispatcher.add_handler(CommandHandler("today_strategy", today_strategy_command))
-dispatcher.add_handler(CommandHandler("btc", btc_command))
-dispatcher.add_handler(CommandHandler("reset_pause", reset_pause_command))
-dispatcher.add_handler(CommandHandler("status", status_command))
-dispatcher.add_handler(CommandHandler("scan_debug", scan_debug_command))
-updater.start_polling(drop_pending_updates=True)
-
-load_positions()
-load_pending_sells()
-load_pending_buys()
-recover_positions_from_exchange()
-cleanup_pending_buy_candidates()
-save_positions()
-save_pending_sells()
-save_pending_buys()
-send_startup_message()
-
-print(f"🚀 {BOT_VERSION} 실행 / {TIMEZONE}")
-
-while True:
-    now_ts = time.time()
-    try:
-        shared_cache = build_shared_market_cache(force=False)
-        update_scan_debug_snapshot(shared_cache)
-        scan_watchlist(shared_cache=shared_cache)
-        process_pending_buy_promotions(shared_cache=shared_cache)
-        scan_and_auto_trade(shared_cache=shared_cache)
-
-        check_pending_sells()
-        cleanup_pending_buy_candidates()
-        monitor_positions()
-
-        if now_ts - last_btc_report_time >= BTC_REPORT_INTERVAL:
-            try:
-                send(analyze_btc_flow())
-            except Exception as e:
-                print(f"[BTC 리포트 오류] {e}")
-            last_btc_report_time = now_ts
-
-        if now_ts - last_status_report_time >= STATUS_REPORT_INTERVAL:
-            try:
-                if active_positions or pending_sells or pending_buy_candidates:
-                    status_command(None, None)
-            except Exception as e:
-                print(f"[상태 리포트 오류] {e}")
-            last_status_report_time = now_ts
-
-    except Exception as e:
-        print(f"[메인 루프 오류] {e}")
-        traceback.print_exc()
-
-    time.sleep(LOOP_SLEEP)
-
+        sorted_candidates = sorted(pending_buy_candidates.values(), key=lambda x: (safe_float(x.get("leader_score", 0)) * 0.8) + safe_float(x.ge
