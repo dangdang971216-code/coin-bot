@@ -13,7 +13,7 @@ from telegram.ext import Updater, CommandHandler, CallbackContext
 # =========================================================
 # 버전
 # =========================================================
-BOT_VERSION = "수익형 v6.5.8f"
+BOT_VERSION = "수익형 v6.5.8g"
 
 # =========================================================
 # 환경변수
@@ -385,13 +385,13 @@ def send_startup_message():
 - 상승 시작형
 - 눌림 반등형
 
-v6.5.8f 핵심:
+v6.5.8g 핵심:
 - S/A/B 등급제로 좋은 거래 특별대우
 - S급은 목표 수익 / 시간정리 / 본절보호를 더 넓게 운영
 - 횡보/혼조 장의 애매한 자동매수는 더 보수화
 - 초반 선점형 품질 필터 유지 강화
 - 추세 지속형 고점 근접 진입 보정 유지
-- 후보 알림 추가 완화 / 쉬기중에도 디버그 표시 / scan_debug 응답 보장
+- 후보 알림 추가 완화 / scan_debug 연결수정 / status 디버그후보 표시
 - 연속 실패 시 자동 쉬기
 - 수동 쉬기 해제(/reset_pause)
 - 매도 exit 보정
@@ -404,6 +404,7 @@ v6.5.8f 핵심:
 - /today_strategy
 - /btc
 - /reset_pause
+- /scan_debug
 - /scan_debug
 """
     )
@@ -3318,6 +3319,7 @@ def summary_strategy_command(update, context: CallbackContext):
     if pattern_lines:
         parts.append("📐 패턴별 결과\n\n" + "\n".join(pattern_lines))
 
+    append_debug_shortlist_parts(parts)
     send("\n\n".join(parts))
 
 
@@ -3350,6 +3352,79 @@ def reset_pause_command(update, context: CallbackContext):
 """
     )
 
+
+
+def get_scan_debug_candidates():
+    try:
+        cache = build_shared_market_cache(force=False)
+        if not cache:
+            return [], "캐시 없음"
+        regime = get_market_regime()
+        results = collect_signals_from_cache(cache, auto_only=False, regime=regime)
+        fallback_results = build_leader_watch_candidates(cache, regime)
+        if fallback_results:
+            results.extend(fallback_results)
+        if not results:
+            return [], regime.get("label", "")
+        unique_results = dedupe_best_signal_per_ticker(results, key_name="signal_score")
+        unique_results.sort(key=lambda x: signal_priority_value(x), reverse=True)
+        return unique_results[:10], regime.get("label", "")
+    except Exception as e:
+        return None, str(e)
+
+def build_scan_debug_text():
+    results, regime_label = get_scan_debug_candidates()
+    if results is None:
+        return f"⚠️ scan_debug 에러: {regime_label}"
+    lines = ["🔎 스캔 디버그"]
+    if regime_label:
+        lines.append(f"장상태: {regime_label}")
+    if not results:
+        lines.append("")
+        lines.append("후보 없음")
+        return "\n".join(lines)
+
+    for i, item in enumerate(results[:8], 1):
+        ticker = item.get("ticker", "?")
+        strategy_label = item.get("strategy_label", item.get("strategy", "?"))
+        score = safe_float(item.get("score", 0))
+        edge = safe_float(item.get("edge_score", 0))
+        leader = safe_float(item.get("leader_score", 0))
+        vol_ratio = safe_float(item.get("vol_ratio", 0))
+        change_pct = safe_float(item.get("change_pct", 0))
+        tags = item.get("pattern_tags", []) or []
+        tag_text = f" / 구조 {','.join(tags[:2])}" if tags else ""
+        checks = []
+        if score < PENDING_BUY_MIN_SCORE:
+            checks.append(f"점수 {score:.2f}")
+        if edge < PENDING_BUY_MIN_EDGE:
+            checks.append(f"기대 {edge:.2f}")
+        if leader < 0.5:
+            checks.append(f"주도 {leader:.2f}")
+        if vol_ratio < 1.0:
+            checks.append(f"거래량 {vol_ratio:.2f}배")
+        if not checks:
+            checks.append("후보 가능권")
+        lines.append("")
+        lines.append(f"{i}. {ticker} / 방식 {strategy_label}{tag_text}")
+        lines.append(f"   상승 {change_pct:.2f}% / 거래량 {vol_ratio:.2f}배")
+        lines.append(f"   점수 {score:.2f} / 기대 {edge:.2f} / 주도 {leader:.2f}")
+        lines.append(f"   체크: {' / '.join(checks[:4])}")
+    return "\n".join(lines)
+
+def scan_debug_command(update, context: CallbackContext):
+    send("🔎 scan_debug 실행중...")
+    try:
+        send(build_scan_debug_text())
+    except Exception as e:
+        send(f"⚠️ scan_debug 에러: {e}")
+
+def append_debug_shortlist_parts(parts: list):
+    try:
+        debug_text = build_scan_debug_text()
+        parts.append(debug_text)
+    except Exception as e:
+        parts.append(f"⚠️ 상위 스캔 후보 표시 에러: {e}")
 
 def status_command(update, context: CallbackContext):
     parts = []
@@ -3416,6 +3491,7 @@ dispatcher.add_handler(CommandHandler("today_strategy", today_strategy_command))
 dispatcher.add_handler(CommandHandler("btc", btc_command))
 dispatcher.add_handler(CommandHandler("reset_pause", reset_pause_command))
 dispatcher.add_handler(CommandHandler("status", status_command))
+dispatcher.add_handler(CommandHandler("scan_debug", scan_debug_command))
 updater.start_polling(drop_pending_updates=True)
 
 load_positions()
@@ -3462,24 +3538,4 @@ while True:
         traceback.print_exc()
 
     time.sleep(LOOP_SLEEP)
-
-
-def cmd_scan_debug(update, context):
-    try:
-        market_state = get_btc_market_state_text()
-    except Exception:
-        market_state = ""
-    try:
-        results = scan_market(return_all=True)
-    except TypeError:
-        # fallback if function has no return_all argument
-        results = scan_market()
-    except Exception as e:
-        send_telegram_message(f"⚠️ scan_debug 에러: {e}")
-        return
-    try:
-        text_msg = build_scan_debug_text(results or [], market_state)
-    except Exception as e:
-        text_msg = f"⚠️ 디버그 메시지 생성 에러: {e}"
-    send_telegram_message(text_msg)
 
