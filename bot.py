@@ -13,7 +13,7 @@ from telegram.ext import Updater, CommandHandler, CallbackContext
 # =========================================================
 # 버전
 # =========================================================
-BOT_VERSION = "수익형 v6.5.8j"
+BOT_VERSION = "수익형 v6.5.8k"
 
 # =========================================================
 # 환경변수
@@ -303,6 +303,10 @@ auto_pause_reset_ignore_before = 0
 # =========================================================
 shared_market_cache = {}
 shared_market_cache_time = 0
+last_scan_debug_snapshot = []
+last_scan_debug_snapshot_time = 0
+last_scan_debug_note = ""
+SCAN_DEBUG_SNAPSHOT_MAX_AGE_SEC = 180
 market_universe = []
 market_universe_time = 0
 
@@ -385,13 +389,13 @@ def send_startup_message():
 - 상승 시작형
 - 눌림 반등형
 
-v6.5.8j 핵심:
+v6.5.8k 핵심:
 - S/A/B 등급제로 좋은 거래 특별대우
 - S급은 목표 수익 / 시간정리 / 본절보호를 더 넓게 운영
 - 횡보/혼조 장의 애매한 자동매수는 더 보수화
 - 초반 선점형 품질 필터 유지 강화
 - 추세 지속형 고점 근접 진입 보정 유지
-- 핵심 데이터값(change/vol) 캐시 보강 / scan_debug 초경량화 / status 후보 표시
+- scan_debug 스냅샷화 / 명령 막힘 완화 / status 즉시 후보 표시
 - 연속 실패 시 자동 쉬기
 - 수동 쉬기 해제(/reset_pause)
 - 매도 exit 보정
@@ -3390,15 +3394,15 @@ def reset_pause_command(update, context: CallbackContext):
 
 
 
-def get_scan_debug_candidates():
-    """
-    초경량 디버그:
-    shared cache의 이미 계산된 값만 바로 읽는다.
-    """
+
+def update_scan_debug_snapshot(cache):
+    global last_scan_debug_snapshot, last_scan_debug_snapshot_time, last_scan_debug_note
     try:
-        cache = build_shared_market_cache(force=False)
         if not cache:
-            return [], "캐시 없음"
+            last_scan_debug_snapshot = []
+            last_scan_debug_snapshot_time = time.time()
+            last_scan_debug_note = "캐시 없음"
+            return
 
         items = []
         for ticker, data in cache.items():
@@ -3406,6 +3410,7 @@ def get_scan_debug_candidates():
                 price = safe_float(data.get("price", 0))
                 if price <= 0:
                     continue
+
                 change_1 = safe_float(data.get("change_1", 0))
                 change_3 = safe_float(data.get("change_3", 0))
                 change_5 = safe_float(data.get("change_5", 0))
@@ -3440,32 +3445,52 @@ def get_scan_debug_candidates():
                 items.append({
                     "ticker": ticker,
                     "price": price,
-                    "change_1": change_1,
-                    "change_3": change_3,
                     "change_5": change_5,
                     "vol_ratio": vol_ratio,
                     "leader_score": leader,
                     "turnover": turnover,
-                    "rsi": rsi,
                     "lite_score": lite_score,
+                    "rsi": rsi,
                     "reasons": reasons,
                 })
             except Exception:
                 continue
 
-        items.sort(key=lambda x: (safe_float(x.get("lite_score", 0)), safe_float(x.get("turnover", 0))), reverse=True)
-        return items[:8], ""
+        items.sort(
+            key=lambda x: (
+                safe_float(x.get("lite_score", 0)),
+                safe_float(x.get("turnover", 0)),
+                safe_float(x.get("change_5", 0)),
+            ),
+            reverse=True,
+        )
+        last_scan_debug_snapshot = items[:8]
+        last_scan_debug_snapshot_time = time.time()
+        last_scan_debug_note = ""
     except Exception as e:
-        return None, str(e)
+        last_scan_debug_snapshot = []
+        last_scan_debug_snapshot_time = time.time()
+        last_scan_debug_note = f"스냅샷 생성 에러: {e}"
+
+def get_scan_debug_candidates():
+    try:
+        age = int(time.time() - last_scan_debug_snapshot_time) if last_scan_debug_snapshot_time else 999999
+        if age > SCAN_DEBUG_SNAPSHOT_MAX_AGE_SEC:
+            return [], f"최근 스냅샷 없음({age}초)"
+        if last_scan_debug_note:
+            return last_scan_debug_snapshot, last_scan_debug_note
+        return last_scan_debug_snapshot, f"최근 {age}초 스냅샷"
+    except Exception as e:
+        return None, f"스냅샷 조회 에러: {e}"
 
 def build_scan_debug_text():
-    results, err = get_scan_debug_candidates()
+    results, note = get_scan_debug_candidates()
     if results is None:
-        return f"⚠️ 스캔 디버그 에러\\n{err}"
+        return f"⚠️ 스캔 디버그 에러\\n{note}"
 
     lines = ["🔎 스캔 디버그"]
-    if err:
-        lines.append(f"사유: {err}")
+    if note:
+        lines.append(f"사유: {note}")
 
     if not results:
         lines.append("")
@@ -3475,19 +3500,15 @@ def build_scan_debug_text():
     for i, item in enumerate(results, 1):
         price_text = f"{safe_float(item.get('price', 0)):,.4f}".rstrip("0").rstrip(".")
         lines.append("")
-        lines.append(f"{i}. {item.get('ticker', '?')} / 현재가 {price_text}")
+        lines.append(f"{i}. {item.get('ticker','?')} / 현재가 {price_text}")
         lines.append(
-            f"   1분 {safe_float(item.get('change_1',0)):.2f}% / 3분 {safe_float(item.get('change_3',0)):.2f}% / 5분 {safe_float(item.get('change_5',0)):.2f}%"
-        )
-        lines.append(
-            f"   거래량 {safe_float(item.get('vol_ratio',0)):.2f}배 / 주도 {safe_float(item.get('leader_score',0)):.2f} / RSI {safe_float(item.get('rsi',50)):.1f}"
+            f"   5분상승 {safe_float(item.get('change_5',0)):.2f}% / 거래량 {safe_float(item.get('vol_ratio',0)):.2f}배 / 주도 {safe_float(item.get('leader_score',0)):.2f}"
         )
         lines.append(f"   경량점수 {safe_float(item.get('lite_score',0)):.2f}")
-        lines.append(f"   체크: {' / '.join(item.get('reasons',[])[:3])}")
+        lines.append(f"   체크: {' / '.join(item.get('reasons', [])[:3])}")
     return "\\n".join(lines)
 
 def scan_debug_command(update, context: CallbackContext):
-    send("🔎 scan_debug 실행중...")
     try:
         send(build_scan_debug_text())
     except Exception as e:
@@ -3495,15 +3516,18 @@ def scan_debug_command(update, context: CallbackContext):
 
 def append_debug_shortlist_parts(parts: list):
     try:
-        results, err = get_scan_debug_candidates()
+        results, note = get_scan_debug_candidates()
         if results is None:
-            parts.append(f"⚠️ 상위 스캔 후보 에러: {err}")
+            parts.append(f"⚠️ 상위 스캔 후보 에러: {note}")
             return
+        header = "🔎 상위 스캔 후보"
+        if note:
+            header += f" ({note})"
         if not results:
-            parts.append("🔎 상위 스캔 후보 없음")
+            parts.append(header + "\\n\\n후보 없음")
             return
 
-        lines = ["🔎 상위 스캔 후보"]
+        lines = [header]
         for item in results[:3]:
             lines.append(
                 f"• {item.get('ticker','?')} / 5분 {safe_float(item.get('change_5',0)):.2f}% / 거래량 {safe_float(item.get('vol_ratio',0)):.2f}배 / 주도 {safe_float(item.get('leader_score',0)):.2f}"
@@ -3513,6 +3537,7 @@ def append_debug_shortlist_parts(parts: list):
         parts.append(f"⚠️ 상위 스캔 후보 표시 에러: {e}")
 
 def status_command(update, context: CallbackContext):
+
 
     parts = []
 
@@ -3597,6 +3622,7 @@ while True:
     now_ts = time.time()
     try:
         shared_cache = build_shared_market_cache(force=False)
+        update_scan_debug_snapshot(shared_cache)
         scan_watchlist(shared_cache=shared_cache)
         process_pending_buy_promotions(shared_cache=shared_cache)
         scan_and_auto_trade(shared_cache=shared_cache)
