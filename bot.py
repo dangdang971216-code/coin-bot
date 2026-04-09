@@ -13,7 +13,7 @@ from telegram.ext import Updater, CommandHandler, CallbackContext
 # =========================================================
 # 버전
 # =========================================================
-BOT_VERSION = "수익형 v6.5.8l"
+BOT_VERSION = "수익형 v6.5.8m"
 
 # =========================================================
 # 환경변수
@@ -389,13 +389,13 @@ def send_startup_message():
 - 상승 시작형
 - 눌림 반등형
 
-v6.5.8l 핵심:
+v6.5.8m 핵심:
 - S/A/B 등급제로 좋은 거래 특별대우
 - S급은 목표 수익 / 시간정리 / 본절보호를 더 넓게 운영
 - 횡보/혼조 장의 애매한 자동매수는 더 보수화
 - 초반 선점형 품질 필터 유지 강화
 - 추세 지속형 고점 근접 진입 보정 유지
-- scan_debug 스냅샷 저장 보강 / 포맷 정상화 / status 후보 표시
+- scan_debug 스냅샷 저장 연결 보강 / recent watch fallback 복구 / status 후보 표시
 - 연속 실패 시 자동 쉬기
 - 수동 쉬기 해제(/reset_pause)
 - 매도 exit 보정
@@ -2557,17 +2557,22 @@ def get_strategy_rank(strategy: str) -> int:
 
 
 def build_watch_snapshot(item: dict):
+    now_ts = time.time()
     return {
         "strategy": item.get("strategy", ""),
         "strategy_label": item.get("strategy_label", ""),
-        "change_pct": safe_float(item.get("change_pct", 0)),
-        "vol_ratio": safe_float(item.get("vol_ratio", 0)),
-        "signal_score": safe_float(item.get("signal_score", 0)),
+        "change_pct": safe_float(item.get("change_pct", item.get("change_5", 0))),
+        "change_5": safe_float(item.get("change_5", item.get("change_pct", 0))),
+        "vol_ratio": safe_float(item.get("vol_ratio", item.get("vol_ratio_1m", 0))),
+        "signal_score": safe_float(item.get("signal_score", item.get("edge_score", 0))),
+        "edge_score": safe_float(item.get("edge_score", item.get("signal_score", 0))),
         "leader_score": safe_float(item.get("leader_score", 0)),
         "pattern_tags": list(item.get("pattern_tags", [])),
-        "price": safe_float(item.get("current_price", 0)),
+        "price": safe_float(item.get("current_price", item.get("price", 0))),
+        "turnover": safe_float(item.get("turnover", 0)),
+        "rsi": safe_float(item.get("rsi", item.get("rsi_1m", 50))),
+        "saved_at": safe_float(item.get("saved_at", now_ts)) or now_ts,
     }
-
 
 def compare_watch_improvement(prev_snap: dict, item: dict):
     reasons = []
@@ -2626,7 +2631,9 @@ def should_send_watch_alert(ticker: str, item: dict, now_ts: float):
 
 def save_watch_snapshot(ticker: str, item: dict, now_ts: float, alert_type: str = "new"):
     recent_watch_alerts[ticker] = now_ts
-    recent_watch_snapshots[ticker] = build_watch_snapshot(item)
+    snap = build_watch_snapshot(item)
+    snap["saved_at"] = now_ts
+    recent_watch_snapshots[ticker] = snap
     if alert_type in ["new", "upgrade"]:
         recent_watch_renotice_counts[ticker] = 0
     elif alert_type == "renotice":
@@ -2688,12 +2695,12 @@ def build_leader_watch_candidates(cache, regime):
                 continue
 
             leader_score = safe_float(data.get("leader_score", 0))
-            vol_ratio = safe_float(data.get("vol_ratio_1m", 0)) or get_vol_ratio(df, 3, 15)
+            vol_ratio = safe_float(data.get("vol_ratio", data.get("vol_ratio_1m", 0))) or get_vol_ratio(df, 3, 15)
             change_1 = safe_float(data.get("change_1", 0))
             change_3 = safe_float(data.get("change_3", 0))
             change_5 = safe_float(data.get("change_5", 0))
             range_pct = safe_float(data.get("range_pct_1m", 0)) or get_range_pct(df, 10)
-            rsi = safe_float(data.get("rsi_1m", 50)) or get_rsi(df, 14)
+            rsi = safe_float(data.get("rsi", data.get("rsi_1m", 50))) or get_rsi(df, 14)
             turnover_rank = int(safe_float(data.get("turnover_rank", 999), 999))
             surge_rank = int(safe_float(data.get("surge_rank", 999), 999))
 
@@ -3360,6 +3367,7 @@ def summary_strategy_command(update, context: CallbackContext):
 
     append_debug_shortlist_parts(parts)
     append_debug_shortlist_parts(parts)
+    append_debug_shortlist_parts(parts)
     send("\n\n".join(parts))
 
 
@@ -3404,17 +3412,18 @@ def get_recent_watch_snapshot_items(limit=8):
         for ticker, snap in recent_watch_snapshots.items():
             if not isinstance(snap, dict):
                 continue
-            age = int(now_ts - safe_float(snap.get("saved_at", 0)))
+            saved_at = safe_float(snap.get("saved_at", now_ts))
+            age = int(now_ts - saved_at)
             if age > 1800:
                 continue
             items.append({
                 "ticker": ticker,
                 "price": safe_float(snap.get("price", 0)),
-                "change_5": safe_float(snap.get("change_pct", 0)),
+                "change_5": safe_float(snap.get("change_5", snap.get("change_pct", 0))),
                 "vol_ratio": safe_float(snap.get("vol_ratio", 0)),
                 "leader_score": safe_float(snap.get("leader_score", 0)),
                 "turnover": safe_float(snap.get("turnover", 0)),
-                "lite_score": safe_float(snap.get("edge_score", 0)) + safe_float(snap.get("leader_score", 0)) * 1.2,
+                "lite_score": safe_float(snap.get("edge_score", snap.get("signal_score", 0))) + safe_float(snap.get("leader_score", 0)) * 1.2,
                 "rsi": safe_float(snap.get("rsi", 50)),
                 "reasons": ["최근후보스냅샷"],
                 "saved_at": safe_float(snap.get("saved_at", 0)),
@@ -3443,10 +3452,10 @@ def update_scan_debug_snapshot(cache):
                 change_1 = safe_float(data.get("change_1", 0))
                 change_3 = safe_float(data.get("change_3", 0))
                 change_5 = safe_float(data.get("change_5", 0))
-                vol_ratio = safe_float(data.get("vol_ratio_1m", 0))
+                vol_ratio = safe_float(data.get("vol_ratio", data.get("vol_ratio_1m", 0)))
                 leader = safe_float(data.get("leader_score", 0))
                 turnover = safe_float(data.get("turnover", 0))
-                rsi = safe_float(data.get("rsi_1m", 50))
+                rsi = safe_float(data.get("rsi", data.get("rsi_1m", 50)))
 
                 lite_score = (
                     max(change_5, 0) * 2.4
@@ -3542,6 +3551,7 @@ def build_scan_debug_text():
 
 def scan_debug_command(update, context: CallbackContext):
     try:
+        send("🔎 scan_debug 실행중...")
         send(build_scan_debug_text())
     except Exception as e:
         send(f"⚠️ scan_debug 에러: {e}")
