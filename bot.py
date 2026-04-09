@@ -13,7 +13,7 @@ from telegram.ext import Updater, CommandHandler, CallbackContext
 # =========================================================
 # 버전
 # =========================================================
-BOT_VERSION = "수익형 v6.5.8m"
+BOT_VERSION = "수익형 v6.5.8n"
 
 # =========================================================
 # 환경변수
@@ -389,13 +389,13 @@ def send_startup_message():
 - 상승 시작형
 - 눌림 반등형
 
-v6.5.8m 핵심:
+v6.5.8n 핵심:
 - S/A/B 등급제로 좋은 거래 특별대우
 - S급은 목표 수익 / 시간정리 / 본절보호를 더 넓게 운영
 - 횡보/혼조 장의 애매한 자동매수는 더 보수화
 - 초반 선점형 품질 필터 유지 강화
 - 추세 지속형 고점 근접 진입 보정 유지
-- scan_debug 스냅샷 저장 연결 보강 / recent watch fallback 복구 / status 후보 표시
+- scan_debug 실시간 캐시 직접조회 / status 후보 표시 복구 / recent watch fallback 유지
 - 연속 실패 시 자동 쉬기
 - 수동 쉬기 해제(/reset_pause)
 - 매도 exit 보정
@@ -3366,8 +3366,6 @@ def summary_strategy_command(update, context: CallbackContext):
         parts.append("📐 패턴별 결과\n\n" + "\n".join(pattern_lines))
 
     append_debug_shortlist_parts(parts)
-    append_debug_shortlist_parts(parts)
-    append_debug_shortlist_parts(parts)
     send("\n\n".join(parts))
 
 
@@ -3405,6 +3403,7 @@ def reset_pause_command(update, context: CallbackContext):
 
 
 
+
 def get_recent_watch_snapshot_items(limit=8):
     try:
         now_ts = time.time()
@@ -3426,103 +3425,90 @@ def get_recent_watch_snapshot_items(limit=8):
                 "lite_score": safe_float(snap.get("edge_score", snap.get("signal_score", 0))) + safe_float(snap.get("leader_score", 0)) * 1.2,
                 "rsi": safe_float(snap.get("rsi", 50)),
                 "reasons": ["최근후보스냅샷"],
-                "saved_at": safe_float(snap.get("saved_at", 0)),
+                "saved_at": saved_at,
             })
         items.sort(key=lambda x: (safe_float(x.get("lite_score", 0)), safe_float(x.get("saved_at", 0))), reverse=True)
         return items[:limit]
     except Exception:
         return []
 
-def update_scan_debug_snapshot(cache):
-    global last_scan_debug_snapshot, last_scan_debug_snapshot_time, last_scan_debug_note
-    try:
-        if not cache:
-            last_scan_debug_snapshot = []
-            last_scan_debug_snapshot_time = time.time()
-            last_scan_debug_note = "캐시 없음"
-            return
-
-        items = []
-        for ticker, data in cache.items():
-            try:
-                price = safe_float(data.get("price", 0))
-                if price <= 0:
-                    continue
-
-                change_1 = safe_float(data.get("change_1", 0))
-                change_3 = safe_float(data.get("change_3", 0))
-                change_5 = safe_float(data.get("change_5", 0))
-                vol_ratio = safe_float(data.get("vol_ratio", data.get("vol_ratio_1m", 0)))
-                leader = safe_float(data.get("leader_score", 0))
-                turnover = safe_float(data.get("turnover", 0))
-                rsi = safe_float(data.get("rsi", data.get("rsi_1m", 50)))
-
-                lite_score = (
-                    max(change_5, 0) * 2.4
-                    + max(change_3, 0) * 1.2
-                    + max(change_1, 0) * 0.6
-                    + max(vol_ratio - 1.0, 0) * 4.0
-                    + min(turnover / 1000000000.0, 8.0)
-                    + leader * 1.6
-                )
-                if rsi >= 82:
-                    lite_score -= 1.5
-
-                reasons = []
-                if change_5 < 0.20:
-                    reasons.append("5분상승약함")
-                if vol_ratio < 1.00:
-                    reasons.append("거래량약함")
-                if leader < 0.50:
-                    reasons.append("주도약함")
-                if rsi >= 82:
-                    reasons.append("RSI과열")
-                if not reasons:
-                    reasons.append("후보가능권")
-
-                items.append({
-                    "ticker": ticker,
-                    "price": price,
-                    "change_5": change_5,
-                    "vol_ratio": vol_ratio,
-                    "leader_score": leader,
-                    "turnover": turnover,
-                    "lite_score": lite_score,
-                    "rsi": rsi,
-                    "reasons": reasons,
-                })
-            except Exception:
-                continue
-
-        items.sort(
-            key=lambda x: (
-                safe_float(x.get("lite_score", 0)),
-                safe_float(x.get("turnover", 0)),
-                safe_float(x.get("change_5", 0)),
-            ),
-            reverse=True,
-        )
-        last_scan_debug_snapshot = items[:8]
-        last_scan_debug_snapshot_time = time.time()
-        last_scan_debug_note = ""
-    except Exception as e:
-        last_scan_debug_snapshot = []
-        last_scan_debug_snapshot_time = time.time()
-        last_scan_debug_note = f"스냅샷 생성 에러: {e}"
-
 def get_scan_debug_candidates():
     try:
-        age = int(time.time() - last_scan_debug_snapshot_time) if last_scan_debug_snapshot_time else 999999
-        if age > SCAN_DEBUG_SNAPSHOT_MAX_AGE_SEC or not last_scan_debug_snapshot:
-            recent_items = get_recent_watch_snapshot_items(limit=8)
-            if recent_items:
-                return recent_items, "최근 후보 스냅샷"
-            return [], f"최근 스냅샷 없음({age}초)"
-        if last_scan_debug_note:
-            return last_scan_debug_snapshot, last_scan_debug_note
-        return last_scan_debug_snapshot, f"최근 {age}초 스냅샷"
+        now_ts = time.time()
+        cache_age = int(now_ts - shared_market_cache_time) if shared_market_cache_time else 999999
+
+        # 1순위: 최근 shared cache 직접 사용 (가장 빠름)
+        if shared_market_cache and cache_age <= 180:
+            items = []
+            for ticker, data in shared_market_cache.items():
+                try:
+                    price = safe_float(data.get("price", 0))
+                    if price <= 0:
+                        continue
+
+                    change_1 = safe_float(data.get("change_1", 0))
+                    change_3 = safe_float(data.get("change_3", 0))
+                    change_5 = safe_float(data.get("change_5", 0))
+                    vol_ratio = safe_float(data.get("vol_ratio", data.get("vol_ratio_1m", 0)))
+                    leader = safe_float(data.get("leader_score", 0))
+                    turnover = safe_float(data.get("turnover", 0))
+                    rsi = safe_float(data.get("rsi", data.get("rsi_1m", 50)))
+
+                    lite_score = (
+                        max(change_5, 0) * 2.4
+                        + max(change_3, 0) * 1.2
+                        + max(change_1, 0) * 0.6
+                        + max(vol_ratio - 1.0, 0) * 4.0
+                        + min(turnover / 1000000000.0, 8.0)
+                        + leader * 1.6
+                    )
+                    if rsi >= 82:
+                        lite_score -= 1.5
+
+                    reasons = []
+                    if change_5 < 0.20:
+                        reasons.append("5분상승약함")
+                    if vol_ratio < 1.00:
+                        reasons.append("거래량약함")
+                    if leader < 0.50:
+                        reasons.append("주도약함")
+                    if rsi >= 82:
+                        reasons.append("RSI과열")
+                    if not reasons:
+                        reasons.append("후보가능권")
+
+                    items.append({
+                        "ticker": ticker,
+                        "price": price,
+                        "change_5": change_5,
+                        "vol_ratio": vol_ratio,
+                        "leader_score": leader,
+                        "turnover": turnover,
+                        "lite_score": lite_score,
+                        "rsi": rsi,
+                        "reasons": reasons,
+                    })
+                except Exception:
+                    continue
+
+            items.sort(
+                key=lambda x: (
+                    safe_float(x.get("lite_score", 0)),
+                    safe_float(x.get("turnover", 0)),
+                    safe_float(x.get("change_5", 0)),
+                ),
+                reverse=True,
+            )
+            return items[:8], f"최근 {cache_age}초 shared cache"
+
+        # 2순위: 최근 후보 스냅샷
+        recent_items = get_recent_watch_snapshot_items(limit=8)
+        if recent_items:
+            return recent_items, "최근 후보 스냅샷"
+
+        return [], f"최근 캐시 없음({cache_age}초)"
     except Exception as e:
-        return None, f"스냅샷 조회 에러: {e}"
+        return None, f"디버그 조회 에러: {e}"
 
 def build_scan_debug_text():
     results, note = get_scan_debug_candidates()
@@ -3562,9 +3548,11 @@ def append_debug_shortlist_parts(parts: list):
         if results is None:
             parts.append(f"⚠️ 상위 스캔 후보 에러: {note}")
             return
+
         header = "🔎 상위 스캔 후보"
         if note:
             header += f" ({note})"
+
         if not results:
             parts.append(header + "\n\n후보 없음")
             return
@@ -3579,6 +3567,7 @@ def append_debug_shortlist_parts(parts: list):
         parts.append(f"⚠️ 상위 스캔 후보 표시 에러: {e}")
 
 def status_command(update, context: CallbackContext):
+
 
 
     parts = []
