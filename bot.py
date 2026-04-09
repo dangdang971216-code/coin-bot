@@ -13,7 +13,7 @@ from telegram.ext import Updater, CommandHandler, CallbackContext
 # =========================================================
 # 버전
 # =========================================================
-BOT_VERSION = "수익형 v6.5.8i"
+BOT_VERSION = "수익형 v6.5.8j"
 
 # =========================================================
 # 환경변수
@@ -385,13 +385,13 @@ def send_startup_message():
 - 상승 시작형
 - 눌림 반등형
 
-v6.5.8i 핵심:
+v6.5.8j 핵심:
 - S/A/B 등급제로 좋은 거래 특별대우
 - S급은 목표 수익 / 시간정리 / 본절보호를 더 넓게 운영
 - 횡보/혼조 장의 애매한 자동매수는 더 보수화
 - 초반 선점형 품질 필터 유지 강화
 - 추세 지속형 고점 근접 진입 보정 유지
-- scan_debug 초경량화 / status 간단 후보 표시 / 후보 없음 이유 빠르게 확인
+- 핵심 데이터값(change/vol) 캐시 보강 / scan_debug 초경량화 / status 후보 표시
 - 연속 실패 시 자동 쉬기
 - 수동 쉬기 해제(/reset_pause)
 - 매도 exit 보정
@@ -1165,11 +1165,54 @@ def get_market_universe(force=False):
     return market_universe
 
 
+
 def build_shared_market_cache(force=False):
     global shared_market_cache, shared_market_cache_time
     now_ts = time.time()
     if (not force) and shared_market_cache and (now_ts - shared_market_cache_time < MARKET_CACHE_TTL_SEC):
         return shared_market_cache
+
+    universe = get_market_universe(force=force)
+    if not universe:
+        return shared_market_cache
+
+    cache = {}
+    for row in universe:
+        ticker = row["ticker"]
+        try:
+            df1 = get_ohlcv(ticker, "minute1")
+            if df1 is None or len(df1) < 35:
+                continue
+            price = safe_float(df1["close"].iloc[-1], 0)
+            if price <= 0:
+                price = row["last_price"]
+            if price <= 0:
+                continue
+
+            cache[ticker] = {
+                "price": price,
+                "df_1m": df1,
+                "df_3m": row["df_3m"],
+                "turnover": row["turnover_recent"],
+                "surge_score": row["surge_score"],
+                "leader_score": row.get("leader_score", 0),
+                "turnover_rank": row.get("turnover_rank", 999),
+                "surge_rank": row.get("surge_rank", 999),
+                "change_1": get_recent_change_pct(df1, 2),
+                "change_3": get_recent_change_pct(df1, 3),
+                "change_5": get_recent_change_pct(df1, 5),
+                "vol_ratio_1m": get_vol_ratio(df1, 3, 15),
+                "range_pct_1m": get_range_pct(df1, 10),
+                "rsi_1m": get_rsi(df1, 14),
+            }
+        except Exception:
+            continue
+
+    if cache:
+        shared_market_cache = cache
+        shared_market_cache_time = now_ts
+        update_recent_leader_board(cache)
+    return shared_market_cache
 
     universe = get_market_universe(force=force)
     if not universe:
@@ -2628,6 +2671,7 @@ def dedupe_best_signal_per_ticker(results, key_name="signal_score"):
     return list(best_per_ticker.values())
 
 
+
 def build_leader_watch_candidates(cache, regime):
     fallback = []
     for ticker, data in cache.items():
@@ -2640,12 +2684,12 @@ def build_leader_watch_candidates(cache, regime):
                 continue
 
             leader_score = safe_float(data.get("leader_score", 0))
-            vol_ratio = get_vol_ratio(df, 2, 10)
-            change_1 = get_recent_change_pct(df, 1)
-            change_3 = get_recent_change_pct(df, 3)
-            change_5 = get_recent_change_pct(df, 5)
-            range_pct = get_range_pct(df, 10)
-            rsi = get_rsi(df, 14)
+            vol_ratio = safe_float(data.get("vol_ratio_1m", 0)) or get_vol_ratio(df, 3, 15)
+            change_1 = safe_float(data.get("change_1", 0))
+            change_3 = safe_float(data.get("change_3", 0))
+            change_5 = safe_float(data.get("change_5", 0))
+            range_pct = safe_float(data.get("range_pct_1m", 0)) or get_range_pct(df, 10)
+            rsi = safe_float(data.get("rsi_1m", 50)) or get_rsi(df, 14)
             turnover_rank = int(safe_float(data.get("turnover_rank", 999), 999))
             surge_rank = int(safe_float(data.get("surge_rank", 999), 999))
 
@@ -2681,26 +2725,18 @@ def build_leader_watch_candidates(cache, regime):
                 strategy="LEADER_WATCH",
                 strategy_label=label,
                 current_price=current_price,
-                entry_price=current_price,
-                support_price=get_recent_low(df, 6),
-                resistance_price=get_recent_high(df, 20),
-                stop_price=current_price * 0.985,
-                target_price=current_price * 1.022,
-                reason_text=f"주도주 점수 {leader_score:.2f} / 거래량 {vol_ratio:.2f}배 / 5분상승 {change_5:.2f}%",
-                warning_text="후보 알림 전용 / 자동매수 아님",
-                change_pct=max(change_3, change_5),
                 vol_ratio=vol_ratio,
+                change_pct=max(change_1, change_3, change_5),
                 rsi=rsi,
-                signal_score=leader_edge,
+                range_pct=range_pct,
+                score=max(5.6, leader_score + max(change_5, 0) * 0.9 + min(vol_ratio, 4.0) * 0.65),
                 edge_score=leader_edge,
-                leader_score=leader_score + (0.25 if turnover_rank <= 20 else 0) + (0.20 if surge_rank <= 20 else 0),
-                stop_loss_pct=-1.5,
-                take_profit_pct=2.2,
-                time_stop_sec=900,
+                leader_score=leader_score,
+                stop_loss_pct=-1.4,
+                take_profit_pct=4.2,
+                time_stop_sec=720,
                 pattern_tags=pattern_tags,
-                reference_high=get_recent_high(df, 20),
-                reference_low=get_recent_low(df, 20),
-                trade_tier="B",
+                reason=f"주도주 점수 {leader_score:.2f} / 5분상승 {change_5:.2f}% / 거래량 {vol_ratio:.2f}배 / 순위 T{turnover_rank}/S{surge_rank}",
             ))
         except Exception:
             continue
@@ -3355,85 +3391,77 @@ def reset_pause_command(update, context: CallbackContext):
 
 
 def get_scan_debug_candidates():
-    '''
-    초경량 디버그용:
-    이미 만들어진 shared cache만 빠르게 읽어서
-    최근 강한 후보를 간단 점수로 보여준다.
-    '''
+    """
+    초경량 디버그:
+    shared cache의 이미 계산된 값만 바로 읽는다.
+    """
     try:
         cache = build_shared_market_cache(force=False)
-    except Exception as e:
-        return None, f"캐시 에러: {e}"
+        if not cache:
+            return [], "캐시 없음"
 
-    if not cache:
-        return [], "캐시 없음"
+        items = []
+        for ticker, data in cache.items():
+            try:
+                price = safe_float(data.get("price", 0))
+                if price <= 0:
+                    continue
+                change_1 = safe_float(data.get("change_1", 0))
+                change_3 = safe_float(data.get("change_3", 0))
+                change_5 = safe_float(data.get("change_5", 0))
+                vol_ratio = safe_float(data.get("vol_ratio_1m", 0))
+                leader = safe_float(data.get("leader_score", 0))
+                turnover = safe_float(data.get("turnover", 0))
+                rsi = safe_float(data.get("rsi_1m", 50))
 
-    items = []
-    for ticker, data in cache.items():
-        try:
-            price = safe_float(data.get("price", 0))
-            if price <= 0:
+                lite_score = (
+                    max(change_5, 0) * 2.4
+                    + max(change_3, 0) * 1.2
+                    + max(change_1, 0) * 0.6
+                    + max(vol_ratio - 1.0, 0) * 4.0
+                    + min(turnover / 1000000000.0, 8.0)
+                    + leader * 1.6
+                )
+                if rsi >= 82:
+                    lite_score -= 1.5
+
+                reasons = []
+                if change_5 < 0.20:
+                    reasons.append("5분상승약함")
+                if vol_ratio < 1.00:
+                    reasons.append("거래량약함")
+                if leader < 0.50:
+                    reasons.append("주도약함")
+                if rsi >= 82:
+                    reasons.append("RSI과열")
+                if not reasons:
+                    reasons.append("후보가능권")
+
+                items.append({
+                    "ticker": ticker,
+                    "price": price,
+                    "change_1": change_1,
+                    "change_3": change_3,
+                    "change_5": change_5,
+                    "vol_ratio": vol_ratio,
+                    "leader_score": leader,
+                    "turnover": turnover,
+                    "rsi": rsi,
+                    "lite_score": lite_score,
+                    "reasons": reasons,
+                })
+            except Exception:
                 continue
 
-            change_1 = safe_float(data.get("change_1", 0))
-            change_3 = safe_float(data.get("change_3", 0))
-            change_5 = safe_float(data.get("change_5", 0))
-            vol_ratio = safe_float(data.get("vol_ratio", 0))
-            turnover = safe_float(data.get("turnover", 0))
-            leader = safe_float(data.get("leader_score", 0))
-            rsi = safe_float(data.get("rsi", 50))
-
-            lite_score = (
-                max(change_5, 0) * 2.2
-                + max(change_3, 0) * 1.2
-                + max(change_1, 0) * 0.6
-                + max(vol_ratio - 1.0, 0) * 4.0
-                + min(turnover / 1000000000, 8.0)
-                + leader * 1.7
-            )
-            if rsi >= 82:
-                lite_score -= 1.5
-
-            reasons = []
-            if change_5 < 0.20:
-                reasons.append("5분상승약함")
-            if vol_ratio < 1.00:
-                reasons.append("거래량약함")
-            if leader < 0.50:
-                reasons.append("주도약함")
-            if rsi >= 82:
-                reasons.append("RSI과열")
-            if not reasons:
-                reasons.append("후보가능권")
-
-            items.append({
-                "ticker": ticker,
-                "price": price,
-                "change_5": change_5,
-                "vol_ratio": vol_ratio,
-                "turnover": turnover,
-                "leader_score": leader,
-                "lite_score": lite_score,
-                "rsi": rsi,
-                "reasons": reasons,
-            })
-        except Exception:
-            continue
-
-    items.sort(
-        key=lambda x: (
-            safe_float(x.get("lite_score", 0)),
-            safe_float(x.get("turnover", 0)),
-            safe_float(x.get("change_5", 0)),
-        ),
-        reverse=True,
-    )
-    return items[:8], ""
+        items.sort(key=lambda x: (safe_float(x.get("lite_score", 0)), safe_float(x.get("turnover", 0))), reverse=True)
+        return items[:8], ""
+    except Exception as e:
+        return None, str(e)
 
 def build_scan_debug_text():
     results, err = get_scan_debug_candidates()
     if results is None:
-        return f"⚠️ 스캔 디버그 에러\n{err}"
+        return f"⚠️ 스캔 디버그 에러\\n{err}"
 
     lines = ["🔎 스캔 디버그"]
     if err:
@@ -3445,20 +3473,17 @@ def build_scan_debug_text():
         return "\\n".join(lines)
 
     for i, item in enumerate(results, 1):
-        ticker = item.get("ticker", "?")
-        price = safe_float(item.get("price", 0))
-        chg5 = safe_float(item.get("change_5", 0))
-        vol_ratio = safe_float(item.get("vol_ratio", 0))
-        leader = safe_float(item.get("leader_score", 0))
-        lite = safe_float(item.get("lite_score", 0))
-        reasons = " / ".join(item.get("reasons", [])[:3])
-
-        price_text = f"{price:,.4f}".rstrip("0").rstrip(".")
+        price_text = f"{safe_float(item.get('price', 0)):,.4f}".rstrip("0").rstrip(".")
         lines.append("")
-        lines.append(f"{i}. {ticker} / 현재가 {price_text}")
-        lines.append(f"   5분상승 {chg5:.2f}% / 거래량 {vol_ratio:.2f}배 / 주도 {leader:.2f}")
-        lines.append(f"   경량점수 {lite:.2f}")
-        lines.append(f"   체크: {reasons}")
+        lines.append(f"{i}. {item.get('ticker', '?')} / 현재가 {price_text}")
+        lines.append(
+            f"   1분 {safe_float(item.get('change_1',0)):.2f}% / 3분 {safe_float(item.get('change_3',0)):.2f}% / 5분 {safe_float(item.get('change_5',0)):.2f}%"
+        )
+        lines.append(
+            f"   거래량 {safe_float(item.get('vol_ratio',0)):.2f}배 / 주도 {safe_float(item.get('leader_score',0)):.2f} / RSI {safe_float(item.get('rsi',50)):.1f}"
+        )
+        lines.append(f"   경량점수 {safe_float(item.get('lite_score',0)):.2f}")
+        lines.append(f"   체크: {' / '.join(item.get('reasons',[])[:3])}")
     return "\\n".join(lines)
 
 def scan_debug_command(update, context: CallbackContext):
@@ -3480,12 +3505,9 @@ def append_debug_shortlist_parts(parts: list):
 
         lines = ["🔎 상위 스캔 후보"]
         for item in results[:3]:
-            ticker = item.get("ticker", "?")
-            lite = safe_float(item.get("lite_score", 0))
-            chg5 = safe_float(item.get("change_5", 0))
-            vol_ratio = safe_float(item.get("vol_ratio", 0))
-            reason = ",".join(item.get("reasons", [])[:2])
-            lines.append(f"• {ticker} / 경량 {lite:.2f} / 5분 {chg5:.2f}% / 거래량 {vol_ratio:.2f}배 / {reason}")
+            lines.append(
+                f"• {item.get('ticker','?')} / 5분 {safe_float(item.get('change_5',0)):.2f}% / 거래량 {safe_float(item.get('vol_ratio',0)):.2f}배 / 주도 {safe_float(item.get('leader_score',0)):.2f}"
+            )
         parts.append("\\n".join(lines))
     except Exception as e:
         parts.append(f"⚠️ 상위 스캔 후보 표시 에러: {e}")
