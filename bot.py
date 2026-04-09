@@ -13,7 +13,7 @@ from telegram.ext import Updater, CommandHandler, CallbackContext
 # =========================================================
 # 버전
 # =========================================================
-BOT_VERSION = "수익형 v6.5.8k"
+BOT_VERSION = "수익형 v6.5.8l"
 
 # =========================================================
 # 환경변수
@@ -389,13 +389,13 @@ def send_startup_message():
 - 상승 시작형
 - 눌림 반등형
 
-v6.5.8k 핵심:
+v6.5.8l 핵심:
 - S/A/B 등급제로 좋은 거래 특별대우
 - S급은 목표 수익 / 시간정리 / 본절보호를 더 넓게 운영
 - 횡보/혼조 장의 애매한 자동매수는 더 보수화
 - 초반 선점형 품질 필터 유지 강화
 - 추세 지속형 고점 근접 진입 보정 유지
-- scan_debug 스냅샷화 / 명령 막힘 완화 / status 즉시 후보 표시
+- scan_debug 스냅샷 저장 보강 / 포맷 정상화 / status 후보 표시
 - 연속 실패 시 자동 쉬기
 - 수동 쉬기 해제(/reset_pause)
 - 매도 exit 보정
@@ -3359,6 +3359,7 @@ def summary_strategy_command(update, context: CallbackContext):
         parts.append("📐 패턴별 결과\n\n" + "\n".join(pattern_lines))
 
     append_debug_shortlist_parts(parts)
+    append_debug_shortlist_parts(parts)
     send("\n\n".join(parts))
 
 
@@ -3394,6 +3395,34 @@ def reset_pause_command(update, context: CallbackContext):
 
 
 
+
+
+def get_recent_watch_snapshot_items(limit=8):
+    try:
+        now_ts = time.time()
+        items = []
+        for ticker, snap in recent_watch_snapshots.items():
+            if not isinstance(snap, dict):
+                continue
+            age = int(now_ts - safe_float(snap.get("saved_at", 0)))
+            if age > 1800:
+                continue
+            items.append({
+                "ticker": ticker,
+                "price": safe_float(snap.get("price", 0)),
+                "change_5": safe_float(snap.get("change_pct", 0)),
+                "vol_ratio": safe_float(snap.get("vol_ratio", 0)),
+                "leader_score": safe_float(snap.get("leader_score", 0)),
+                "turnover": safe_float(snap.get("turnover", 0)),
+                "lite_score": safe_float(snap.get("edge_score", 0)) + safe_float(snap.get("leader_score", 0)) * 1.2,
+                "rsi": safe_float(snap.get("rsi", 50)),
+                "reasons": ["최근후보스냅샷"],
+                "saved_at": safe_float(snap.get("saved_at", 0)),
+            })
+        items.sort(key=lambda x: (safe_float(x.get("lite_score", 0)), safe_float(x.get("saved_at", 0))), reverse=True)
+        return items[:limit]
+    except Exception:
+        return []
 
 def update_scan_debug_snapshot(cache):
     global last_scan_debug_snapshot, last_scan_debug_snapshot_time, last_scan_debug_note
@@ -3475,7 +3504,10 @@ def update_scan_debug_snapshot(cache):
 def get_scan_debug_candidates():
     try:
         age = int(time.time() - last_scan_debug_snapshot_time) if last_scan_debug_snapshot_time else 999999
-        if age > SCAN_DEBUG_SNAPSHOT_MAX_AGE_SEC:
+        if age > SCAN_DEBUG_SNAPSHOT_MAX_AGE_SEC or not last_scan_debug_snapshot:
+            recent_items = get_recent_watch_snapshot_items(limit=8)
+            if recent_items:
+                return recent_items, "최근 후보 스냅샷"
             return [], f"최근 스냅샷 없음({age}초)"
         if last_scan_debug_note:
             return last_scan_debug_snapshot, last_scan_debug_note
@@ -3486,7 +3518,7 @@ def get_scan_debug_candidates():
 def build_scan_debug_text():
     results, note = get_scan_debug_candidates()
     if results is None:
-        return f"⚠️ 스캔 디버그 에러\\n{note}"
+        return f"⚠️ 스캔 디버그 에러\n{note}"
 
     lines = ["🔎 스캔 디버그"]
     if note:
@@ -3495,7 +3527,7 @@ def build_scan_debug_text():
     if not results:
         lines.append("")
         lines.append("후보 없음")
-        return "\\n".join(lines)
+        return "\n".join(lines)
 
     for i, item in enumerate(results, 1):
         price_text = f"{safe_float(item.get('price', 0)):,.4f}".rstrip("0").rstrip(".")
@@ -3506,7 +3538,7 @@ def build_scan_debug_text():
         )
         lines.append(f"   경량점수 {safe_float(item.get('lite_score',0)):.2f}")
         lines.append(f"   체크: {' / '.join(item.get('reasons', [])[:3])}")
-    return "\\n".join(lines)
+    return "\n".join(lines)
 
 def scan_debug_command(update, context: CallbackContext):
     try:
@@ -3524,7 +3556,7 @@ def append_debug_shortlist_parts(parts: list):
         if note:
             header += f" ({note})"
         if not results:
-            parts.append(header + "\\n\\n후보 없음")
+            parts.append(header + "\n\n후보 없음")
             return
 
         lines = [header]
@@ -3532,7 +3564,7 @@ def append_debug_shortlist_parts(parts: list):
             lines.append(
                 f"• {item.get('ticker','?')} / 5분 {safe_float(item.get('change_5',0)):.2f}% / 거래량 {safe_float(item.get('vol_ratio',0)):.2f}배 / 주도 {safe_float(item.get('leader_score',0)):.2f}"
             )
-        parts.append("\\n".join(lines))
+        parts.append("\n".join(lines))
     except Exception as e:
         parts.append(f"⚠️ 상위 스캔 후보 표시 에러: {e}")
 
