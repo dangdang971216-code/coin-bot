@@ -13,7 +13,7 @@ from telegram.ext import Updater, CommandHandler, CallbackContext
 # =========================================================
 # 버전
 # =========================================================
-BOT_VERSION = "수익형 v6.5.8d"
+BOT_VERSION = "수익형 v6.5.8e"
 
 # =========================================================
 # 환경변수
@@ -255,8 +255,8 @@ USE_PULLBACK_RECHECK_BONUS = True
 PENDING_BUY_ON = True
 PENDING_BUY_MAX_ITEMS = 6
 PENDING_BUY_TTL_SEC = 165
-PENDING_BUY_MIN_EDGE = 4.8
-PENDING_BUY_MIN_SCORE = 4.4
+PENDING_BUY_MIN_EDGE = 4.5
+PENDING_BUY_MIN_SCORE = 4.1
 PENDING_BUY_RECHECK_MIN_SEC = 26
 
 PROMOTE_RECOVERY_TO_HIGH_PCT = 99.7
@@ -266,11 +266,11 @@ PROMOTE_MAX_BREAKOUT_EXTENSION_PCT = 0.45
 # =========================================================
 # watch 재알림 제어
 # =========================================================
-WATCH_RENOTICE_SEC = 600
-WATCH_VOL_IMPROVE_DELTA = 0.35
-WATCH_CHANGE_IMPROVE_DELTA = 0.30
-WATCH_SCORE_IMPROVE_DELTA = 0.55
-WATCH_RENOTICE_MAX_PER_TICKER = 3
+WATCH_RENOTICE_SEC = 480
+WATCH_VOL_IMPROVE_DELTA = 0.25
+WATCH_CHANGE_IMPROVE_DELTA = 0.22
+WATCH_SCORE_IMPROVE_DELTA = 0.40
+WATCH_RENOTICE_MAX_PER_TICKER = 4
 
 # =========================================================
 # 리포트 간격
@@ -385,13 +385,13 @@ def send_startup_message():
 - 상승 시작형
 - 눌림 반등형
 
-v6.5.8d 핵심:
+v6.5.8e 핵심:
 - S/A/B 등급제로 좋은 거래 특별대우
 - S급은 목표 수익 / 시간정리 / 본절보호를 더 넓게 운영
 - 횡보/혼조 장의 애매한 자동매수는 더 보수화
 - 초반 선점형 품질 필터 유지 강화
 - 추세 지속형 고점 근접 진입 보정 유지
-- 후보 알림 문턱 완화 / 재확인 반복 알림 축소 유지
+- 후보 알림 문턱 완화 / 재확인 반복 알림 축소 유지 / 스캔 디버그 추가
 - 연속 실패 시 자동 쉬기
 - 수동 쉬기 해제(/reset_pause)
 - 매도 exit 보정
@@ -404,6 +404,7 @@ v6.5.8d 핵심:
 - /today_strategy
 - /btc
 - /reset_pause
+- /scan_debug
 """
     )
 
@@ -2648,13 +2649,13 @@ def build_leader_watch_candidates(cache, regime):
             turnover_rank = int(safe_float(data.get("turnover_rank", 999), 999))
             surge_rank = int(safe_float(data.get("surge_rank", 999), 999))
 
-            if leader_score < 1.2:
+            if leader_score < 0.8:
                 continue
-            if vol_ratio < 1.05 and change_5 < 0.40:
+            if vol_ratio < 1.00 and change_5 < 0.30:
                 continue
-            if change_3 < 0.15 and change_5 < 0.40:
+            if change_3 < 0.10 and change_5 < 0.30:
                 continue
-            if range_pct < 0.25 and vol_ratio < 1.20:
+            if range_pct < 0.18 and vol_ratio < 1.05:
                 continue
             if upper_wick_too_large(df) and change_3 < 0.90:
                 continue
@@ -2705,7 +2706,7 @@ def build_leader_watch_candidates(cache, regime):
             continue
 
     fallback.sort(key=lambda x: (safe_float(x.get("leader_score", 0)) * 1.2) + safe_float(x.get("edge_score", 0)), reverse=True)
-    return fallback[:12]
+    return fallback[:15]
 
 
 def scan_watchlist(shared_cache=None):
@@ -2726,7 +2727,7 @@ def scan_watchlist(shared_cache=None):
         update_pending_buy_candidates_from_results(real_results, regime)
     unique_results = dedupe_best_signal_per_ticker(results, key_name="signal_score")
     unique_results.sort(key=lambda x: signal_priority_value(x), reverse=True)
-    top = unique_results[:12]
+    top = unique_results[:15]
 
     new_lines, upgrade_lines, renotice_lines = [], [], []
     now_ts = time.time()
@@ -3461,3 +3462,24 @@ while True:
         traceback.print_exc()
 
     time.sleep(LOOP_SLEEP)
+
+
+def cmd_scan_debug(update, context):
+    try:
+        market_state = get_btc_market_state_text()
+    except Exception:
+        market_state = ""
+    try:
+        results = scan_market(return_all=True)
+    except TypeError:
+        # fallback if function has no return_all argument
+        results = scan_market()
+    except Exception as e:
+        send_telegram_message(f"⚠️ scan_debug 에러: {e}")
+        return
+    try:
+        text_msg = build_scan_debug_text(results or [], market_state)
+    except Exception as e:
+        text_msg = f"⚠️ 디버그 메시지 생성 에러: {e}"
+    send_telegram_message(text_msg)
+
