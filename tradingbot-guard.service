@@ -1,0 +1,18 @@
+[Unit]
+Description=Backga Guard Telegram Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/dangdang971216/trading_bot
+EnvironmentFile=-/home/dangdang971216/trading_bot/guard.env
+ExecStart=/usr/bin/python3 /home/dangdang971216/trading_bot/backga_guard_bot.py
+Restart=always
+RestartSec=3
+# 관리봇은 메인봇 restart/journal 접근이 필요해서 root 실행이 가장 단순함.
+# 불편하면 sudoers 방식으로 바꿀 수 있음.
+User=root
+
+[Install]
+WantedBy=multi-user.target
