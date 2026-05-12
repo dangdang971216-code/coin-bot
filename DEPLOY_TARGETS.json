@@ -1,0 +1,11 @@
+{
+  "main_bot": "수익형_v2.13.132.py",
+  "paper_bot": "paper_bot_v0.2.py",
+  "expected_paper_bot_version": "paper_bot_v0.2",
+  "upgrade_policy": "check_main_and_paper_from_github; update_changed_files_only; keep_when_missing_or_same_hash; restart_paper_bot_only_when_paper_file_changed",
+  "notes": [
+    "기존 DEPLOY_TARGET.txt는 메인봇 호환용으로 유지",
+    "가드봇/업그레이드 루틴은 이 기준으로 main+paper_bot 둘 다 확인해야 함",
+    "paper_bot은 파일 교체 후 실행 중 프로세스 재시작이 필요함"
+  ]
+}
