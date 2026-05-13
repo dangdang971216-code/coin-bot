@@ -1,0 +1,2088 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+paper_bot_v0.5.py
+- 텔레그램 조종 + 모의매매 실행을 한 파일에서 처리하는 '페이퍼봇'.
+- 메인봇이 전략 판단까지 끝낸 후보파일을 읽고, 가짜 OPEN/CLOSED 결과만 저장한다.
+- 재스캔/전략판단/OHLCV 계산 없음. 실제 주문 기능 없음. 실매매와 연결 금지.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import signal
+import sys
+import time
+import traceback
+import urllib.parse
+import urllib.request
+from dataclasses import dataclass, asdict
+from pathlib import Path
+from threading import Thread, Event, Lock
+from typing import Any, Dict, List, Optional, Tuple
+
+VERSION = "paper_bot_v0.12"
+BASE_DIR = Path(__file__).resolve().parent
+
+FILES = {
+    "candidate_events": BASE_DIR / "candidate_events.jsonl",
+    "paper_candidates": BASE_DIR / "paper_candidates.jsonl",
+    "shadow_candidates": BASE_DIR / "shadow_candidates.jsonl",
+    "open": BASE_DIR / "paper_bot_open.json",
+    "closed": BASE_DIR / "paper_bot_closed.jsonl",
+    "status": BASE_DIR / "paper_bot_status.json",
+    "control": BASE_DIR / "paper_bot_control.json",
+    "error": BASE_DIR / "paper_bot_error.log",
+    "log": BASE_DIR / "paper_bot.log",
+    "pid": BASE_DIR / "paper_bot.pid",
+    "flag": BASE_DIR / "external_paper_bot_on.flag",
+    "legacy_flag": BASE_DIR / "external_paper_runner_on.flag",
+}
+
+DEFAULT_CONTROL = {
+    "running": False,
+    "loop_seconds": 8,
+    "max_open_strict": 80,
+    "max_open_shadow": 120,
+    "max_new_per_cycle": 24,
+    "allow_shadow_from_candidate_events": True,
+    # 알림은 정식 모의매매급만 보낸다. 탈락 후보 복기는 기록만 쌓고 텔레그램 알림은 보내지 않는다.
+    "notify_on_strict_open": True,
+    "notify_on_strict_close": True,
+    "notify_on_shadow": False,
+    "fee_pct_roundtrip": 0.10,  # 왕복 수수료 가정치(%). 실제 체결 아님.
+    "take_profit_pct": 1.20,
+    "protect_trigger_pct": 0.90,
+    "protect_floor_pct": 0.20,
+    "stop_loss_pct": -1.20,
+    "slow_minutes": 20,
+    "slow_peak_under_pct": 0.25,
+    "time_exit_minutes": 120,
+}
+
+_stop_event = Event()
+_state_lock = Lock()
+_update_offset = 0
+_BAD_MARKETS: set[str] = set()
+_BITHUMB_MARKETS_CACHE: dict[str, Any] = {'ts': 0.0, 'symbols': set()}
+ERROR_LOG_ROTATE_MAX_BYTES = 500_000
+ERROR_LOG_KEEP_LINES = 260
+
+
+
+def now() -> float:
+    return time.time()
+
+
+def iso_ts(ts: Optional[float] = None) -> str:
+    ts = ts or now()
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts))
+
+
+def append_line(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(text.rstrip("\n") + "\n")
+
+
+def log(msg: str) -> None:
+    append_line(FILES["log"], f"[{iso_ts()}] {msg}")
+
+
+def rotate_error_log_if_needed(force: bool = False) -> None:
+    """오류로그가 커지면 통째 백업하고 새 로그로 시작한다."""
+    try:
+        path = FILES["error"]
+        if not path.exists():
+            return
+        if (not force) and path.stat().st_size <= ERROR_LOG_ROTATE_MAX_BYTES:
+            return
+        bak = path.with_name(path.name + f".bak_{time.strftime('%Y%m%d_%H%M%S')}")
+        try:
+            path.replace(bak)
+            path.write_text(
+                f"[{iso_ts()}] old error log moved to {bak.name} / fresh log started\n",
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+def log_error(where: str, exc: BaseException) -> None:
+    try:
+        rotate_error_log_if_needed()
+        append_line(FILES["error"], f"[{iso_ts()}] {where}: {exc}")
+        append_line(FILES["error"], traceback.format_exc())
+    except Exception:
+        pass
+
+
+def load_json(path: Path, default: Any) -> Any:
+    try:
+        if not path.exists():
+            return default
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        log_error(f"load_json:{path.name}", exc)
+        return default
+
+
+def save_json(path: Path, obj: Any) -> None:
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
+def load_control() -> Dict[str, Any]:
+    control = DEFAULT_CONTROL.copy()
+    saved = load_json(FILES["control"], {})
+    if isinstance(saved, dict):
+        control.update(saved)
+    return control
+
+
+def save_control(updates: Dict[str, Any]) -> Dict[str, Any]:
+    control = load_control()
+    control.update(updates)
+    save_json(FILES["control"], control)
+    return control
+
+
+def set_pause_flags(on: bool) -> None:
+    # v131부터 primary는 external_paper_bot_on.flag. legacy flag도 같이 맞춰 예전 메인봇과 충돌을 줄인다.
+    for key in ["flag", "legacy_flag"]:
+        path = FILES.get(key)
+        if not isinstance(path, Path):
+            continue
+        try:
+            if on:
+                path.write_text(f"paper_bot_on {iso_ts()}\n", encoding="utf-8")
+            else:
+                path.unlink(missing_ok=True)
+        except Exception as exc:
+            log_error(f"set_pause_flags:{key}", exc)
+
+
+def read_jsonl(path: Path, max_lines: int = 5000) -> List[Dict[str, Any]]:
+    if not path.exists():
+        return []
+    out: List[Dict[str, Any]] = []
+    try:
+        lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+        for line in lines[-max_lines:]:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+                if isinstance(obj, dict):
+                    out.append(obj)
+            except Exception:
+                continue
+    except Exception as exc:
+        log_error(f"read_jsonl:{path.name}", exc)
+    return out
+
+
+def append_jsonl(path: Path, obj: Dict[str, Any]) -> None:
+    append_line(path, json.dumps(obj, ensure_ascii=False, separators=(",", ":")))
+
+
+def normalize_ticker(ticker: Any) -> Optional[str]:
+    """메인봇 후보 ticker를 빗썸 심볼(BTC, ETH...) 하나로 통일한다."""
+    if not ticker:
+        return None
+    t = str(ticker).strip().upper()
+    if not t:
+        return None
+    t = t.replace("/", "-").replace("_", "-")
+    parts = [x for x in t.split("-") if x]
+    if len(parts) >= 2:
+        non_krw = [x for x in parts if x != "KRW"]
+        return (non_krw[-1] if non_krw else parts[-1]).strip().upper() or None
+    if t.endswith("KRW") and len(t) > 3:
+        t = t[:-3]
+    return t.strip().upper() or None
+
+
+def short_ticker(ticker: str) -> str:
+    return normalize_ticker(ticker) or str(ticker or "").strip().upper()
+
+
+def bithumb_symbol(ticker: Any) -> Optional[str]:
+    """메인봇 후보 ticker를 빗썸용 심볼(BTC, ETH...)로 통일한다."""
+    return normalize_ticker(ticker)
+
+
+def float_any(*vals: Any, default: float = 0.0) -> float:
+    for v in vals:
+        if v is None:
+            continue
+        try:
+            if isinstance(v, str):
+                v = v.replace(",", "").replace("%", "").strip()
+            f = float(v)
+            if f == f:
+                return f
+        except Exception:
+            continue
+    return default
+
+
+def get_event_price(event: Dict[str, Any]) -> float:
+    return float_any(
+        event.get("entry_price"),
+        event.get("detected_price"),
+        event.get("current_price"),
+        event.get("price"),
+        event.get("close"),
+        event.get("trade_price"),
+        default=0.0,
+    )
+
+
+def fetch_bithumb_symbols(timeout: float = 3.0) -> set[str]:
+    """빗썸 KRW 마켓 심볼 목록을 캐시한다. 실패하면 빈 set을 반환하고 기존 후보 처리는 계속한다."""
+    try:
+        now_ts = now()
+        cached = _BITHUMB_MARKETS_CACHE.get("symbols")
+        if cached and now_ts - float_any(_BITHUMB_MARKETS_CACHE.get("ts"), default=0.0) < 1800:
+            return set(cached)
+        url = "https://api.bithumb.com/public/ticker/ALL_KRW"
+        req = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": VERSION})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        rows = data.get("data") if isinstance(data, dict) else {}
+        symbols = {str(k).upper() for k in rows.keys() if isinstance(rows.get(k), dict)} if isinstance(rows, dict) else set()
+        symbols.discard("DATE")
+        if symbols:
+            _BITHUMB_MARKETS_CACHE["ts"] = now_ts
+            _BITHUMB_MARKETS_CACHE["symbols"] = symbols
+        return symbols
+    except Exception as exc:
+        # 마켓목록 실패는 큰 오류로 누적하지 않고 로그에만 남긴다.
+        log(f"bithumb symbol list fetch failed: {exc.__class__.__name__}")
+        return set()
+
+
+def fetch_bithumb_price(ticker: str, timeout: float = 2.5) -> Optional[float]:
+    """빗썸 현재가 조회. 없는 종목/404는 bad_market_skip으로 조용히 넘긴다."""
+    sym = bithumb_symbol(ticker)
+    if not sym:
+        return None
+    if sym in _BAD_MARKETS:
+        return None
+    symbols = fetch_bithumb_symbols(timeout=1.8)
+    if symbols and sym not in symbols:
+        _BAD_MARKETS.add(sym)
+        log(f"bad_market_skip {sym}: not in Bithumb market")
+        return None
+    urls = [
+        f"https://api.bithumb.com/public/ticker/{urllib.parse.quote(sym)}_KRW",
+        f"https://api.bithumb.com/public/ticker/{urllib.parse.quote(sym)}/KRW",
+    ]
+    for url in urls:
+        try:
+            req = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": VERSION})
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            if isinstance(data, dict) and str(data.get("status")) == "0000":
+                row = data.get("data") or {}
+                price = float_any(row.get("closing_price"), row.get("trade_price"), row.get("close"), default=0.0)
+                return price if price > 0 else None
+            if isinstance(data, dict) and str(data.get("status")) not in {"0000", "None", ""}:
+                _BAD_MARKETS.add(sym)
+                log(f"bad_market_skip {sym}: bithumb status {data.get('status')}")
+                return None
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                _BAD_MARKETS.add(sym)
+                log(f"bad_market_skip {sym}: HTTP 404")
+                return None
+            log_error("fetch_bithumb_price_http", exc)
+            return None
+        except Exception as exc:
+            log_error("fetch_bithumb_price", exc)
+            return None
+    return None
+
+def event_id(event: Dict[str, Any], lane: str) -> str:
+    raw = event.get("event_id") or event.get("id") or event.get("event_key")
+    ticker = normalize_ticker(event.get("ticker") or event.get("market") or event.get("symbol") or "") or "UNKNOWN"
+    ts = event.get("created_at") or event.get("detected_ts") or event.get("ts") or event.get("time") or event.get("timestamp") or "0"
+    decision = event.get("decision") or event.get("quality_category") or event.get("alert_bucket") or ""
+    if raw:
+        return f"{lane}:{raw}"
+    return f"{lane}:{ticker}:{ts}:{decision}"
+
+
+def load_open() -> Dict[str, Dict[str, Any]]:
+    obj = load_json(FILES["open"], {})
+    return obj if isinstance(obj, dict) else {}
+
+
+def save_open(open_pos: Dict[str, Dict[str, Any]]) -> None:
+    save_json(FILES["open"], open_pos)
+
+
+def closed_count() -> int:
+    if not FILES["closed"].exists():
+        return 0
+    try:
+        return sum(1 for _ in FILES["closed"].open("r", encoding="utf-8", errors="ignore"))
+    except Exception:
+        return 0
+
+
+def load_closed_ids(limit: int = 10000) -> set:
+    ids = set()
+    for obj in read_jsonl(FILES["closed"], max_lines=limit):
+        eid = obj.get("event_id") or obj.get("pos_id")
+        if eid:
+            ids.add(str(eid))
+    return ids
+
+
+def count_by_lane(open_pos: Dict[str, Dict[str, Any]]) -> Dict[str, int]:
+    counts = {"strict": 0, "shadow": 0}
+    for p in open_pos.values():
+        lane = str(p.get("lane") or "shadow")
+        counts[lane] = counts.get(lane, 0) + 1
+    return counts
+
+
+def pick_candidates(control: Dict[str, Any], open_pos: Dict[str, Dict[str, Any]]) -> Tuple[List[Tuple[str, Dict[str, Any]]], Dict[str, int]]:
+    closed_ids = load_closed_ids()
+    existing_ids = set(open_pos.keys()) | closed_ids
+    picked: List[Tuple[str, Dict[str, Any]]] = []
+    stats = {
+        "paper_file": 0,
+        "shadow_file": 0,
+        "events_file": 0,
+        "dup_skip": 0,
+        "bad_skip": 0,
+    }
+
+    lane_counts = count_by_lane(open_pos)
+    max_strict = int(control.get("max_open_strict", 8))
+    max_shadow = int(control.get("max_open_shadow", 20))
+    max_new = int(control.get("max_new_per_cycle", 8))
+
+    # 1) 정식 paper 후보
+    for ev in read_jsonl(FILES["paper_candidates"], max_lines=2000):
+        if len(picked) >= max_new:
+            break
+        stats["paper_file"] += 1
+        lane = "strict"
+        eid = event_id(ev, lane)
+        if eid in existing_ids:
+            stats["dup_skip"] += 1
+            continue
+        if lane_counts.get("strict", 0) >= max_strict:
+            break
+        t = normalize_ticker(ev.get("ticker") or ev.get("market") or ev.get("symbol"))
+        price = get_event_price(ev)
+        if not t or price <= 0:
+            stats["bad_skip"] += 1
+            continue
+        ev["lane"] = lane
+        picked.append((eid, ev))
+        existing_ids.add(eid)
+        lane_counts["strict"] = lane_counts.get("strict", 0) + 1
+
+    # 2) 탈락 복기용 shadow 후보
+    for ev in read_jsonl(FILES["shadow_candidates"], max_lines=2000):
+        if len(picked) >= max_new:
+            break
+        stats["shadow_file"] += 1
+        lane = "shadow"
+        eid = event_id(ev, lane)
+        if eid in existing_ids:
+            stats["dup_skip"] += 1
+            continue
+        if lane_counts.get("shadow", 0) >= max_shadow:
+            break
+        t = normalize_ticker(ev.get("ticker") or ev.get("market") or ev.get("symbol"))
+        price = get_event_price(ev)
+        if not t or price <= 0:
+            stats["bad_skip"] += 1
+            continue
+        ev["lane"] = lane
+        picked.append((eid, ev))
+        existing_ids.add(eid)
+        lane_counts["shadow"] = lane_counts.get("shadow", 0) + 1
+
+    # 3) shadow 파일이 비었을 때만, 전체 이벤트에서 복기 후보를 일부 가져옴
+    if control.get("allow_shadow_from_candidate_events", True):
+        for ev in read_jsonl(FILES["candidate_events"], max_lines=2000):
+            if len(picked) >= max_new:
+                break
+            stats["events_file"] += 1
+            decision = str(ev.get("decision") or ev.get("quality_category") or "").lower()
+            eligible = bool(ev.get("eligible_for_paper") or ev.get("paper_eligible"))
+            lane = "strict" if eligible else "shadow"
+            if lane == "strict" and lane_counts.get("strict", 0) >= max_strict:
+                continue
+            if lane == "shadow" and lane_counts.get("shadow", 0) >= max_shadow:
+                continue
+            # 너무 무의미한 기록은 제외. 그래도 밤새 복기용 데이터는 쌓이게 한다.
+            if lane == "shadow" and not any(x in decision for x in ["blocked", "discard", "flow", "money", "data", "quality"]):
+                # decision이 빈 경우에도 점수/가격이 있으면 허용
+                if float_any(ev.get("score"), ev.get("edge"), default=0.0) <= 0:
+                    continue
+            eid = event_id(ev, lane)
+            if eid in existing_ids:
+                stats["dup_skip"] += 1
+                continue
+            t = normalize_ticker(ev.get("ticker") or ev.get("market") or ev.get("symbol"))
+            price = get_event_price(ev)
+            if not t or price <= 0:
+                stats["bad_skip"] += 1
+                continue
+            ev["lane"] = lane
+            picked.append((eid, ev))
+            existing_ids.add(eid)
+            lane_counts[lane] = lane_counts.get(lane, 0) + 1
+
+    return picked, stats
+
+
+def open_position(pos_id: str, ev: Dict[str, Any], control: Dict[str, Any]) -> Dict[str, Any]:
+    ticker = normalize_ticker(ev.get("ticker") or ev.get("market") or ev.get("symbol")) or "UNKNOWN"
+    detected_price = get_event_price(ev)
+    live_price = fetch_bithumb_price(ticker) or detected_price
+    entry_price = live_price if live_price > 0 else detected_price
+    lane = str(ev.get("lane") or "shadow")
+    return {
+        "pos_id": pos_id,
+        "event_id": pos_id,
+        "ticker": ticker,
+        "lane": lane,
+        "opened_at": now(),
+        "opened_at_text": iso_ts(),
+        "entry_price": entry_price,
+        "detected_price": detected_price,
+        "current_price": entry_price,
+        "peak_pct": 0.0,
+        "trough_pct": 0.0,
+        "last_update": now(),
+        "strategy": ev.get("strategy") or ev.get("route") or ev.get("section") or "unknown",
+        "decision": ev.get("decision") or ev.get("quality_category") or "",
+        "score": float_any(ev.get("score"), ev.get("leader_score"), default=0.0),
+        "edge": float_any(ev.get("edge"), ev.get("edge_score"), default=0.0),
+        "reason": ev.get("reason") or ev.get("why") or ev.get("block_reason") or "",
+        "raw": ev,
+    }
+
+
+def update_position(pos: Dict[str, Any], control: Dict[str, Any]) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
+    ticker = pos.get("ticker") or ""
+    entry = float_any(pos.get("entry_price"), default=0.0)
+    if entry <= 0:
+        return pos, None
+    price = fetch_bithumb_price(ticker) or float_any(pos.get("current_price"), pos.get("entry_price"), default=entry)
+    pos["current_price"] = price
+    gross = ((price / entry) - 1.0) * 100.0
+    net = gross - float_any(control.get("fee_pct_roundtrip"), default=0.10)
+    pos["last_pnl_pct"] = net
+    pos["peak_pct"] = max(float_any(pos.get("peak_pct"), default=0.0), net)
+    pos["trough_pct"] = min(float_any(pos.get("trough_pct"), default=0.0), net)
+    pos["last_update"] = now()
+
+    age_min = (now() - float_any(pos.get("opened_at"), default=now())) / 60.0
+    peak = float_any(pos.get("peak_pct"), default=0.0)
+    exit_reason: Optional[str] = None
+
+    if net <= float_any(control.get("stop_loss_pct"), default=-1.2):
+        exit_reason = "stop_loss"
+    elif peak >= float_any(control.get("protect_trigger_pct"), default=0.9) and net <= float_any(control.get("protect_floor_pct"), default=0.2):
+        exit_reason = "protect_stop_after_tp"
+    elif net >= float_any(control.get("take_profit_pct"), default=1.2):
+        exit_reason = "take_profit"
+    elif age_min >= float_any(control.get("slow_minutes"), default=20) and peak < float_any(control.get("slow_peak_under_pct"), default=0.25) and net <= 0.10:
+        exit_reason = "slow_no_progress"
+    elif age_min >= float_any(control.get("time_exit_minutes"), default=120):
+        exit_reason = "time_exit"
+
+    if not exit_reason:
+        return pos, None
+
+    closed = {
+        "closed_at": now(),
+        "closed_at_text": iso_ts(),
+        "pos_id": pos.get("pos_id"),
+        "event_id": pos.get("event_id"),
+        "ticker": ticker,
+        "lane": pos.get("lane"),
+        "entry_price": entry,
+        "exit_price": price,
+        "pnl_pct": round(net, 4),
+        "peak_pct": round(peak, 4),
+        "trough_pct": round(float_any(pos.get("trough_pct"), default=0.0), 4),
+        "age_min": round(age_min, 2),
+        "exit_reason": exit_reason,
+        "strategy": pos.get("strategy"),
+        "decision": pos.get("decision"),
+        "score": pos.get("score"),
+        "edge": pos.get("edge"),
+    }
+    return pos, closed
+
+
+def run_cycle() -> Dict[str, Any]:
+    started = now()
+    control = load_control()
+    with _state_lock:
+        open_pos = load_open()
+        counts_before = count_by_lane(open_pos)
+        picked, pick_stats = pick_candidates(control, open_pos)
+        opened = 0
+        opened_items: List[Dict[str, Any]] = []
+        for pos_id, ev in picked:
+            try:
+                if pos_id not in open_pos:
+                    new_pos = open_position(pos_id, ev, control)
+                    open_pos[pos_id] = new_pos
+                    opened_items.append(new_pos)
+                    opened += 1
+            except Exception as exc:
+                log_error("open_position", exc)
+
+        closed_items: List[Dict[str, Any]] = []
+        for pos_id, pos in list(open_pos.items()):
+            try:
+                updated, closed = update_position(pos, control)
+                if closed:
+                    closed_items.append(closed)
+                    open_pos.pop(pos_id, None)
+                    append_jsonl(FILES["closed"], closed)
+                else:
+                    open_pos[pos_id] = updated
+            except Exception as exc:
+                log_error("update_position", exc)
+
+        save_open(open_pos)
+        counts_after = count_by_lane(open_pos)
+        status = {
+            "version": VERSION,
+            "updated_at": now(),
+            "updated_at_text": iso_ts(),
+            "running": bool(control.get("running")),
+            "loop_seconds": control.get("loop_seconds"),
+            "opened_this_cycle": opened,
+            "closed_this_cycle": len(closed_items),
+            "open_total": len(open_pos),
+            "open_strict": counts_after.get("strict", 0),
+            "open_shadow": counts_after.get("shadow", 0),
+            "closed_total": closed_count(),
+            "pick_stats": pick_stats,
+            "counts_before": counts_before,
+            "elapsed_sec": round(now() - started, 3),
+            "files": file_stats(),
+            "flag_exists": FILES["flag"].exists(),
+        }
+        save_json(FILES["status"], status)
+        notify_strict_events(opened_items, closed_items, control)
+        log(f"cycle opened={opened} closed={len(closed_items)} open={len(open_pos)} elapsed={status['elapsed_sec']}s")
+        return status
+
+
+def file_stats() -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
+    for name in ["candidate_events", "paper_candidates", "shadow_candidates", "open", "closed", "status", "error", "log"]:
+        p = FILES[name]
+        info = {"exists": p.exists(), "size": p.stat().st_size if p.exists() else 0}
+        if p.suffix == ".jsonl" and p.exists():
+            try:
+                info["lines"] = sum(1 for _ in p.open("r", encoding="utf-8", errors="ignore"))
+            except Exception:
+                info["lines"] = -1
+        out[name] = info
+    return out
+
+
+def worker_loop() -> None:
+    log("worker_loop started")
+    while not _stop_event.is_set():
+        try:
+            control = load_control()
+            if control.get("running"):
+                run_cycle()
+            _stop_event.wait(float_any(control.get("loop_seconds"), default=8.0))
+        except Exception as exc:
+            log_error("worker_loop", exc)
+            _stop_event.wait(3)
+    log("worker_loop stopped")
+
+
+def summary_text() -> str:
+    status = load_json(FILES["status"], {})
+    control = load_control()
+    open_pos = load_open()
+    counts = count_by_lane(open_pos)
+    fs = file_stats()
+    lines_candidate = fs.get("candidate_events", {}).get("lines", 0)
+    lines_paper = fs.get("paper_candidates", {}).get("lines", 0)
+    lines_shadow = fs.get("shadow_candidates", {}).get("lines", 0)
+    err_size = fs.get("error", {}).get("size", 0)
+    return (
+        f"🧪 페이퍼봇 {VERSION}\n"
+        f"- 실행상태: {'ON' if control.get('running') else 'OFF'} / loop {control.get('loop_seconds')}s\n"
+        f"- OPEN: 전체 {len(open_pos)} / 정식 {counts.get('strict',0)} / 복기 {counts.get('shadow',0)}\n"
+        f"- CLOSED: {closed_count()}건\n"
+        f"- 후보파일: 전체 {lines_candidate} / 정식 {lines_paper} / 복기 {lines_shadow}\n"
+        f"- 알림: 정식 모의매매급만 ON / 복기용 알림 OFF\n"
+        f"- 최근 cycle: open +{status.get('opened_this_cycle',0)} / close +{status.get('closed_this_cycle',0)} / {status.get('elapsed_sec','-')}s\n"
+        f"- 업데이트: {status.get('updated_at_text','-')}\n"
+        f"- flag: {'ON' if FILES['flag'].exists() else 'OFF'} / 오류로그 {err_size} bytes / bad_market {len(_BAD_MARKETS)}"
+    )
+
+
+def tail_file(path: Path, n: int = 20) -> str:
+    if not path.exists():
+        return f"파일 없음: {path.name}"
+    try:
+        lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()[-n:]
+        if not lines:
+            return f"빈 파일: {path.name}"
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"읽기 실패 {path.name}: {exc}"
+
+
+def tg_api(token: str, method: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    url = f"https://api.telegram.org/bot{token}/{method}"
+    data = urllib.parse.urlencode(params).encode("utf-8")
+    req = urllib.request.Request(url, data=data)
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        raw = resp.read().decode("utf-8")
+        return json.loads(raw)
+
+
+def send_message(token: str, chat_id: Any, text: str) -> None:
+    # Telegram 제한 방지: 너무 길면 자름
+    max_len = 3900
+    chunks = [text[i:i+max_len] for i in range(0, len(text), max_len)] or [""]
+    for ch in chunks:
+        tg_api(token, "sendMessage", {"chat_id": chat_id, "text": ch})
+
+
+def get_notify_chat_id() -> str:
+    # 자동 알림은 별도 지정값 우선. 없으면 허용 채팅방 값을 사용한다.
+    return (
+        os.environ.get("PAPER_BOT_NOTIFY_CHAT_ID", "").strip()
+        or os.environ.get("PAPER_BOT_ALLOWED_CHAT_ID", "").strip()
+    )
+
+
+def _fmt_alert_price(v: Any) -> str:
+    try:
+        x = float_any(v, default=0.0)
+        if x >= 1000:
+            return f"{x:,.0f}"
+        if x >= 1:
+            return f"{x:,.4f}"
+        return f"{x:,.8f}"
+    except Exception:
+        return "0"
+
+
+def _format_strict_open_alert(pos: Dict[str, Any]) -> str:
+    return (
+        "✅ 정식 모의매매 진입\n"
+        f"- 코인: {short_ticker(str(pos.get('ticker') or ''))}\n"
+        f"- 진입가: {_fmt_alert_price(pos.get('entry_price'))}\n"
+        f"- 전략/경로: {pos.get('strategy') or 'unknown'}\n"
+        f"- 점수: {float_any(pos.get('score'), default=0.0):.2f} / edge {float_any(pos.get('edge'), default=0.0):.2f}\n"
+        "- 구분: 정식 모의매매급\n"
+        "- 참고: 실제 주문 아님"
+    )
+
+
+def _format_strict_close_alert(row: Dict[str, Any]) -> str:
+    pnl = float_any(row.get('pnl_pct'), default=0.0)
+    icon = "✅" if pnl >= 0 else "❌"
+    return (
+        f"{icon} 정식 모의매매 종료\n"
+        f"- 코인: {short_ticker(str(row.get('ticker') or ''))}\n"
+        f"- 수익률: {pnl:+.2f}% / 최고 {float_any(row.get('peak_pct'), default=0.0):+.2f}%\n"
+        f"- 종료이유: {row.get('exit_reason') or '-'}\n"
+        f"- 보유시간: {float_any(row.get('age_min'), default=0.0):.1f}분\n"
+        "- 구분: 정식 모의매매급"
+    )
+
+
+def notify_strict_events(opened_items: List[Dict[str, Any]], closed_items: List[Dict[str, Any]], control: Dict[str, Any]) -> None:
+    # 복기용 shadow는 알림 금지. 기록/상태에는 남긴다.
+    token = os.environ.get("PAPER_BOT_TOKEN", "").strip()
+    chat_id = get_notify_chat_id()
+    if not token or not chat_id:
+        return
+    try:
+        if bool(control.get("notify_on_strict_open", True)):
+            for pos in opened_items:
+                if str(pos.get("lane") or "") == "strict":
+                    send_message(token, chat_id, _format_strict_open_alert(pos))
+        if bool(control.get("notify_on_strict_close", True)):
+            for row in closed_items:
+                if str(row.get("lane") or "") == "strict":
+                    send_message(token, chat_id, _format_strict_close_alert(row))
+    except Exception as exc:
+        log_error("notify_strict_events", exc)
+
+
+def build_pbatch_text() -> str:
+    """페이퍼봇 전체 점검: 상태/파일/최근로그/오류를 한 번에 보여준다."""
+    fs = file_stats()
+    status = load_json(FILES["status"], {})
+    control = load_control()
+    open_pos = load_open()
+    counts = count_by_lane(open_pos)
+    err_tail = tail_file(FILES["error"], 12)
+    log_tail = tail_file(FILES["log"], 10)
+    if err_tail.startswith("파일 없음") or err_tail.startswith("빈 파일"):
+        err_tail = "오류 없음"
+    lines = [
+        f"📦 페이퍼봇 묶음점검 /pbatch",
+        "",
+        f"✅ 버전: {VERSION}",
+        f"- 실행상태: {'ON' if control.get('running') else 'OFF'} / loop {control.get('loop_seconds')}s",
+        f"- 현재 모의보유: 전체 {len(open_pos)} / 정식 {counts.get('strict',0)} / 탈락복기 {counts.get('shadow',0)}",
+        f"- 오늘/누적 종료결과: {closed_count()}건",
+        "- 알림정책: 정식 모의매매급만 알림 / 탈락 후보 복기는 무알림 기록",
+        f"- 최근 cycle: 진입 +{status.get('opened_this_cycle',0)} / 종료 +{status.get('closed_this_cycle',0)} / {status.get('elapsed_sec','-')}s",
+        f"- 업데이트: {status.get('updated_at_text','-')}",
+        f"- 내부 paper pause flag: {'ON' if FILES['flag'].exists() else 'OFF'}",
+        f"- 가격조회: 빗썸 기준 / 없는 종목 skip {len(_BAD_MARKETS)}개",
+        "",
+        "📁 후보/결과 파일",
+        f"- 전체 후보 기록: {fs.get('candidate_events',{}).get('lines',0)} lines",
+        f"- 정식 모의매매: {fs.get('paper_candidates',{}).get('lines',0)} lines",
+        f"- 탈락 후보 복기: {fs.get('shadow_candidates',{}).get('lines',0)} lines",
+        f"- 현재 모의보유 파일: {'있음' if fs.get('open',{}).get('exists') else '없음'} / {fs.get('open',{}).get('size',0)} bytes",
+        f"- 종료결과 파일: {fs.get('closed',{}).get('lines',0)} lines / {fs.get('closed',{}).get('size',0)} bytes",
+        "",
+        "⚠️ 오류",
+        err_tail,
+        "",
+        "🧾 최근 로그",
+        log_tail,
+        "",
+        "판독",
+        "- 전략 판단은 메인봇이 끝낸다. 페이퍼봇은 후보파일을 받아 장부만 기록한다.",
+        "- 복기용은 알림 없이 기록만 쌓고, 알림은 정식 모의매매급만 보낸다.",
+        "- v136부터 메인봇 단일전략 후보의 실행 결과만 장부로 쌓는다.",
+    ]
+    return "\n".join(lines)
+
+
+def set_paper_bot_menu(token: str) -> None:
+    """텔레그램 메뉴탭 등록. 실패해도 실행에는 영향 없게 둔다."""
+    try:
+        commands = [
+            {"command": "phelp", "description": "페이퍼봇 도움말"},
+            {"command": "pbatch", "description": "전체 점검"},
+            {"command": "batch", "description": "전체 점검"},
+            {"command": "pstatus", "description": "현재 상태"},
+            {"command": "ponce", "description": "1회 테스트"},
+            {"command": "pstart", "description": "밤새 실행 시작"},
+            {"command": "pstop", "description": "중지"},
+            {"command": "prestart", "description": "재시작"},
+            {"command": "plog", "description": "최근 로그"},
+            {"command": "perror", "description": "오류 확인"},
+        ]
+        tg_api(token, "setMyCommands", {"commands": json.dumps(commands, ensure_ascii=False)})
+        log("telegram command menu registered")
+    except Exception as exc:
+        log_error("set_paper_bot_menu", exc)
+
+def notify_startup(token: str) -> None:
+    chat_id = get_notify_chat_id()
+    if not token or not chat_id:
+        return
+    try:
+        send_message(token, chat_id, "\n".join([
+            f"🧪 페이퍼봇 시작/재시작 알림",
+            f"- 버전: {VERSION}",
+            f"- 실행상태: {'ON' if load_control().get('running') else 'OFF'}",
+            f"- OPEN: {len(load_open())} / CLOSED {closed_count()}",
+            "- 가격조회: 빗썸 기준",
+            "- 알림정책: 정식 모의매매급만 알림"
+        ]))
+    except Exception as exc:
+        log_error("notify_startup", exc)
+
+
+def handle_command(text: str) -> str:
+    cmd = (text or "").strip().split()[0].lower()
+    if cmd in ["/phelp", "/help", "/start"]:
+        return (
+            "🧪 페이퍼봇 명령어\n"
+            "/pstatus - 상태\n"
+            "/pbatch 또는 /batch - 전체 점검\n"
+            "/ponce - 한 번만 모의매매 실행\n"
+            "/pstart - 밤새 실행 시작\n"
+            "/pstop - 실행 중지\n"
+            "/prestart - 재시작\n"
+            "/pfiles - 후보/결과 파일 확인\n"
+            "/plog - 최근 로그\n"
+            "/perror - 오류 로그\n"
+            "/pflag_on - 메인봇 내부 paper pause flag 켜기\n"
+            "/pflag_off - pause flag 끄기\n"
+        )
+    if cmd == "/pstatus":
+        return summary_text()
+    if cmd in ["/pbatch", "/batch"]:
+        return build_pbatch_text()
+    if cmd == "/ponce":
+        status = run_cycle()
+        return "✅ 1회 실행 완료\n" + summary_text()
+    if cmd == "/pstart":
+        save_control({"running": True})
+        set_pause_flags(True)
+        return "✅ 페이퍼봇 실행 ON\n메인봇 내부 paper pause flag도 켰어.\n" + summary_text()
+    if cmd == "/pstop":
+        save_control({"running": False})
+        return "⏸ 페이퍼봇 실행 OFF\n" + summary_text()
+    if cmd == "/prestart":
+        save_control({"running": False})
+        time.sleep(0.5)
+        save_control({"running": True})
+        set_pause_flags(True)
+        return "🔁 페이퍼봇 재시작 완료\n" + summary_text()
+    if cmd == "/pfiles":
+        fs = file_stats()
+        lines = ["📁 페이퍼봇 파일"]
+        for k, v in fs.items():
+            line = f"- {k}: {'있음' if v.get('exists') else '없음'} / {v.get('size',0)} bytes"
+            if "lines" in v:
+                line += f" / {v.get('lines')} lines"
+            lines.append(line)
+        return "\n".join(lines)
+    if cmd == "/plog":
+        return "🧾 최근 로그\n" + tail_file(FILES["log"], 30)
+    if cmd == "/perror":
+        body = tail_file(FILES["error"], 30)
+        if body.startswith("파일 없음") or body.startswith("빈 파일"):
+            body = "오류 없음"
+        return "⚠️ 오류 로그\n" + body
+    if cmd == "/pflag_on":
+        set_pause_flags(True)
+        return "✅ paper_bot pause flag 생성 완료\n메인봇 내부 paper pause 신호야."
+    if cmd == "/pflag_off":
+        try:
+            set_pause_flags(False)
+        except Exception:
+            pass
+        return "✅ paper_bot pause flag 제거 완료\n메인봇 내부 paper 유지/재개 신호야."
+    return "모르는 명령어야. /phelp 를 보내줘."
+
+
+def telegram_loop(token: str) -> None:
+    global _update_offset
+    allowed = os.environ.get("PAPER_BOT_ALLOWED_CHAT_ID", "").strip()
+    log("telegram_loop started")
+    send_ok_once = False
+    while not _stop_event.is_set():
+        try:
+            params: Dict[str, Any] = {"timeout": 20}
+            if _update_offset:
+                params["offset"] = _update_offset
+            res = tg_api(token, "getUpdates", params)
+            if not res.get("ok"):
+                time.sleep(2)
+                continue
+            for upd in res.get("result", []):
+                _update_offset = int(upd.get("update_id", 0)) + 1
+                msg = upd.get("message") or upd.get("edited_message") or {}
+                chat = msg.get("chat") or {}
+                chat_id = chat.get("id")
+                text = msg.get("text") or ""
+                if not chat_id or not text:
+                    continue
+                if allowed and str(chat_id) != allowed:
+                    send_message(token, chat_id, "허용된 채팅방이 아니야.")
+                    continue
+                reply = handle_command(text)
+                send_message(token, chat_id, reply)
+            if not send_ok_once:
+                send_ok_once = True
+                log("telegram polling ok")
+        except Exception as exc:
+            log_error("telegram_loop", exc)
+            time.sleep(3)
+    log("telegram_loop stopped")
+
+
+def write_pid() -> None:
+    FILES["pid"].write_text(str(os.getpid()), encoding="utf-8")
+
+
+def install_signal_handlers() -> None:
+    def _handler(signum, frame):  # type: ignore[no-untyped-def]
+        log(f"signal {signum} received")
+        _stop_event.set()
+    signal.signal(signal.SIGTERM, _handler)
+    signal.signal(signal.SIGINT, _handler)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Telegram-controlled paper trading bot")
+    parser.add_argument("--once", action="store_true", help="run one paper cycle and exit")
+    parser.add_argument("--status", action="store_true", help="print status and exit")
+    parser.add_argument("--bot", action="store_true", help="start Telegram bot polling")
+    args = parser.parse_args()
+
+    if args.once:
+        print(json.dumps(run_cycle(), ensure_ascii=False, indent=2))
+        return 0
+    if args.status:
+        print(summary_text())
+        return 0
+
+    token = os.environ.get("PAPER_BOT_TOKEN", "").strip()
+    if not token:
+        print("PAPER_BOT_TOKEN 환경변수가 없어. BotFather 토큰을 export 한 뒤 실행해.")
+        print("예: export PAPER_BOT_TOKEN='123:ABC'")
+        return 2
+
+    write_pid()
+    install_signal_handlers()
+    rotate_error_log_if_needed(force=True)
+    set_paper_bot_menu(token)
+    set_pause_flags(True)
+    notify_startup(token)
+    worker = Thread(target=worker_loop, name="paper-worker", daemon=True)
+    worker.start()
+    telegram_loop(token)
+    _stop_event.set()
+    worker.join(timeout=3)
+    return 0
+
+
+
+
+# ============================ paper_bot_v0.8 notification/open diagnostics ============================
+# 목적:
+# - 메인봇 후보전달과 실제 모의매수 OPEN 알림을 구분한다.
+# - 알림이 안 올 때 token/chat/OPEN 제한/중복skip/정식파일 읽기 여부를 상태판에 표시한다.
+# - 전략 판단은 계속 하지 않는다. 후보파일을 읽고 장부만 처리한다.
+VERSION = "paper_bot_v0.12"
+
+try:
+    _PB05_RUN_CYCLE = run_cycle
+except Exception:
+    _PB05_RUN_CYCLE = None
+
+
+def notify_config_status() -> Dict[str, Any]:
+    token = os.environ.get("PAPER_BOT_TOKEN", "").strip()
+    chat_id = get_notify_chat_id()
+    return {
+        "token": bool(token),
+        "chat_id": bool(chat_id),
+        "chat_id_tail": str(chat_id)[-4:] if chat_id else "",
+        "strict_open_on": bool(load_control().get("notify_on_strict_open", True)),
+        "strict_close_on": bool(load_control().get("notify_on_strict_close", True)),
+        "shadow_on": bool(load_control().get("notify_on_shadow", False)),
+    }
+
+
+def _v06_recent_open_summary(opened_items: List[Dict[str, Any]], closed_items: List[Dict[str, Any]]) -> Dict[str, Any]:
+    return {
+        "opened_strict": sum(1 for x in opened_items if str(x.get("lane") or "") == "strict"),
+        "opened_shadow": sum(1 for x in opened_items if str(x.get("lane") or "") == "shadow"),
+        "closed_strict": sum(1 for x in closed_items if str(x.get("lane") or "") == "strict"),
+        "closed_shadow": sum(1 for x in closed_items if str(x.get("lane") or "") == "shadow"),
+        "opened_tickers": [short_ticker(str(x.get("ticker") or "")) for x in opened_items[:8]],
+        "closed_tickers": [short_ticker(str(x.get("ticker") or "")) for x in closed_items[:8]],
+    }
+
+
+def run_cycle() -> Dict[str, Any]:
+    started = now()
+    control = load_control()
+    with _state_lock:
+        open_pos = load_open()
+        counts_before = count_by_lane(open_pos)
+        picked, pick_stats = pick_candidates(control, open_pos)
+        opened = 0
+        opened_items: List[Dict[str, Any]] = []
+        open_fail = 0
+        for pos_id, ev in picked:
+            try:
+                if pos_id not in open_pos:
+                    new_pos = open_position(pos_id, ev, control)
+                    open_pos[pos_id] = new_pos
+                    opened_items.append(new_pos)
+                    opened += 1
+            except Exception as exc:
+                open_fail += 1
+                log_error("open_position", exc)
+
+        closed_items: List[Dict[str, Any]] = []
+        for pos_id, pos in list(open_pos.items()):
+            try:
+                updated, closed = update_position(pos, control)
+                if closed:
+                    closed_items.append(closed)
+                    open_pos.pop(pos_id, None)
+                    append_jsonl(FILES["closed"], closed)
+                else:
+                    open_pos[pos_id] = updated
+            except Exception as exc:
+                log_error("update_position", exc)
+
+        save_open(open_pos)
+        counts_after = count_by_lane(open_pos)
+        notify_status = notify_config_status()
+        recent_summary = _v06_recent_open_summary(opened_items, closed_items)
+        strict_full = counts_after.get("strict", 0) >= int(control.get("max_open_strict", 12))
+        shadow_full = counts_after.get("shadow", 0) >= int(control.get("max_open_shadow", 20))
+        status = {
+            "version": VERSION,
+            "updated_at": now(),
+            "updated_at_text": iso_ts(),
+            "running": bool(control.get("running")),
+            "loop_seconds": control.get("loop_seconds"),
+            "opened_this_cycle": opened,
+            "closed_this_cycle": len(closed_items),
+            "open_fail_this_cycle": open_fail,
+            "open_total": len(open_pos),
+            "open_strict": counts_after.get("strict", 0),
+            "open_shadow": counts_after.get("shadow", 0),
+            "closed_total": closed_count(),
+            "pick_stats": pick_stats,
+            "counts_before": counts_before,
+            "capacity": {
+                "max_open_strict": int(control.get("max_open_strict", 12)),
+                "max_open_shadow": int(control.get("max_open_shadow", 20)),
+                "strict_full": strict_full,
+                "shadow_full": shadow_full,
+            },
+            "notify": notify_status,
+            "recent_summary": recent_summary,
+            "elapsed_sec": round(now() - started, 3),
+            "files": file_stats(),
+            "flag_exists": FILES["flag"].exists(),
+        }
+        save_json(FILES["status"], status)
+        notify_strict_events(opened_items, closed_items, control)
+        log(f"cycle opened={opened} strict={recent_summary['opened_strict']} shadow={recent_summary['opened_shadow']} closed={len(closed_items)} open={len(open_pos)} elapsed={status['elapsed_sec']}s")
+        return status
+
+
+def _v06_status_extra_lines(status: Dict[str, Any], control: Dict[str, Any], open_pos: Dict[str, Dict[str, Any]]) -> List[str]:
+    pick = status.get("pick_stats") if isinstance(status.get("pick_stats"), dict) else {}
+    cap = status.get("capacity") if isinstance(status.get("capacity"), dict) else {}
+    nt = status.get("notify") if isinstance(status.get("notify"), dict) else notify_config_status()
+    recent = status.get("recent_summary") if isinstance(status.get("recent_summary"), dict) else {}
+    return [
+        f"- 이번 cycle 진입: 전체 +{status.get('opened_this_cycle',0)} / 정식 +{recent.get('opened_strict',0)} / 복기 +{recent.get('opened_shadow',0)} / 실패 {status.get('open_fail_this_cycle',0)}",
+        f"- 후보 읽기: 정식파일 {pick.get('paper_file',0)} / 복기파일 {pick.get('shadow_file',0)} / 전체파일 {pick.get('events_file',0)} / 중복skip {pick.get('dup_skip',0)} / bad {pick.get('bad_skip',0)}",
+        f"- OPEN 한도: 정식 {len([p for p in open_pos.values() if str(p.get('lane'))=='strict'])}/{cap.get('max_open_strict', control.get('max_open_strict'))} {'FULL' if cap.get('strict_full') else '여유'} / 복기 {len([p for p in open_pos.values() if str(p.get('lane'))=='shadow'])}/{cap.get('max_open_shadow', control.get('max_open_shadow'))} {'FULL' if cap.get('shadow_full') else '여유'}",
+        f"- 알림설정: token {'OK' if nt.get('token') else '없음'} / chat {'OK' if nt.get('chat_id') else '없음'} / strict OPEN {'ON' if nt.get('strict_open_on') else 'OFF'} / strict CLOSE {'ON' if nt.get('strict_close_on') else 'OFF'} / shadow {'ON' if nt.get('shadow_on') else 'OFF'}",
+        f"- 최근 OPEN: {', '.join(recent.get('opened_tickers') or []) if recent.get('opened_tickers') else '-'}",
+    ]
+
+
+def summary_text() -> str:
+    status = load_json(FILES["status"], {})
+    control = load_control()
+    open_pos = load_open()
+    counts = count_by_lane(open_pos)
+    fs = file_stats()
+    lines_candidate = fs.get("candidate_events", {}).get("lines", 0)
+    lines_paper = fs.get("paper_candidates", {}).get("lines", 0)
+    lines_shadow = fs.get("shadow_candidates", {}).get("lines", 0)
+    err_size = fs.get("error", {}).get("size", 0)
+    lines = [
+        f"🧪 페이퍼봇 {VERSION}",
+        f"- 실행상태: {'ON' if control.get('running') else 'OFF'} / loop {control.get('loop_seconds')}s",
+        f"- OPEN: 전체 {len(open_pos)} / 정식 {counts.get('strict',0)} / 복기 {counts.get('shadow',0)}",
+        f"- CLOSED: {closed_count()}건",
+        f"- 후보파일: 전체 {lines_candidate} / 정식 {lines_paper} / 복기 {lines_shadow}",
+    ]
+    lines.extend(_v06_status_extra_lines(status, control, open_pos))
+    lines += [
+        f"- 업데이트: {status.get('updated_at_text','-')}",
+        f"- flag: {'ON' if FILES['flag'].exists() else 'OFF'} / 오류로그 {err_size} bytes / bad_market {len(_BAD_MARKETS)}",
+        "- 알림구분: 메인봇=후보전달 / 페이퍼봇=정식 모의매수 OPEN·CLOSED",
+    ]
+    return "\n".join(lines)
+
+
+def _format_strict_open_alert(pos: Dict[str, Any]) -> str:
+    raw = pos.get("raw") if isinstance(pos.get("raw"), dict) else {}
+    return (
+        "✅ 정식 모의매수 OPEN\n"
+        f"- 코인: {short_ticker(str(pos.get('ticker') or ''))}\n"
+        f"- 진입가: {_fmt_alert_price(pos.get('entry_price'))}\n"
+        f"- 전략/경로: {pos.get('strategy') or 'unknown'}\n"
+        f"- 점수: {float_any(pos.get('score'), default=0.0):.2f} / edge {float_any(pos.get('edge'), default=0.0):.2f}\n"
+        f"- 5분 {float_any(raw.get('change_5'), default=0.0):+.2f}% / 거래량 {float_any(raw.get('vol_ratio'), default=0.0):.2f}배 / 돈 {float_any(raw.get('money_flow'), raw.get('turnover_5m'), default=0.0)/1000000:.1f}백만\n"
+        f"- 이유: {str(pos.get('reason') or raw.get('reason') or '-')[:180]}\n"
+        "- 구분: 실제 주문 아님 / 모의매매 장부 OPEN"
+    )
+
+
+def _format_strict_close_alert(row: Dict[str, Any]) -> str:
+    pnl = float_any(row.get('pnl_pct'), default=0.0)
+    icon = "✅" if pnl >= 0 else "❌"
+    return (
+        f"{icon} 정식 모의청산 CLOSED\n"
+        f"- 코인: {short_ticker(str(row.get('ticker') or ''))}\n"
+        f"- 수익률: {pnl:+.2f}% / 최고 {float_any(row.get('peak_pct'), default=0.0):+.2f}% / 최저 {float_any(row.get('trough_pct'), default=0.0):+.2f}%\n"
+        f"- 종료이유: {row.get('exit_reason') or '-'}\n"
+        f"- 보유시간: {float_any(row.get('age_min'), default=0.0):.1f}분\n"
+        "- 구분: 정식 모의매매 장부 CLOSED"
+    )
+
+
+def build_pbatch_text() -> str:
+    fs = file_stats(); status = load_json(FILES["status"], {}); control = load_control(); open_pos = load_open(); counts = count_by_lane(open_pos)
+    err_tail = tail_file(FILES["error"], 12); log_tail = tail_file(FILES["log"], 10)
+    if err_tail.startswith("파일 없음") or err_tail.startswith("빈 파일"): err_tail = "오류 없음"
+    lines = [
+        f"📦 페이퍼봇 묶음점검 /pbatch", "", f"✅ 버전: {VERSION}",
+        f"- 실행상태: {'ON' if control.get('running') else 'OFF'} / loop {control.get('loop_seconds')}s",
+        f"- 현재 모의보유: 전체 {len(open_pos)} / 정식 {counts.get('strict',0)} / 탈락복기 {counts.get('shadow',0)}",
+        f"- 오늘/누적 종료결과: {closed_count()}건",
+    ]
+    lines.extend(_v06_status_extra_lines(status, control, open_pos))
+    lines += [
+        "", "📁 후보/결과 파일",
+        f"- 전체 후보 기록: {fs.get('candidate_events',{}).get('lines',0)} lines",
+        f"- 정식 모의매매: {fs.get('paper_candidates',{}).get('lines',0)} lines",
+        f"- 탈락 후보 복기: {fs.get('shadow_candidates',{}).get('lines',0)} lines",
+        f"- 현재 모의보유 파일: {'있음' if fs.get('open',{}).get('exists') else '없음'} / {fs.get('open',{}).get('size',0)} bytes",
+        f"- 종료결과 파일: {fs.get('closed',{}).get('lines',0)} lines / {fs.get('closed',{}).get('size',0)} bytes",
+        "", "⚠️ 오류", err_tail, "", "🧾 최근 로그", log_tail, "", "판독",
+        "- 메인봇 후보전달 알림만 오고 여기 OPEN 알림이 안 오면, 위의 token/chat/정식파일/OPEN한도/중복skip을 먼저 본다.",
+        "- 전략 판단은 메인봇이 끝낸다. 페이퍼봇은 후보파일을 받아 장부만 기록한다.",
+    ]
+    return "\n".join(lines)
+
+
+def notify_startup(token: str) -> None:
+    chat_id = get_notify_chat_id()
+    if not token or not chat_id: return
+    try:
+        send_message(token, chat_id, "\n".join([
+            f"🧪 페이퍼봇 시작/재시작 알림", f"- 버전: {VERSION}",
+            f"- 실행상태: {'ON' if load_control().get('running') else 'OFF'}", f"- OPEN: {len(load_open())} / CLOSED {closed_count()}",
+            "- 알림구분: 정식 모의매수 OPEN / 정식 모의청산 CLOSED",
+        ]))
+    except Exception as exc:
+        log_error("notify_startup", exc)
+# ============================ end paper_bot_v0.6 patch ============================
+
+
+
+
+
+# ============================ paper_bot_v0.8 capacity/chat/prune overrides ============================
+# 목적:
+# - PAPER_CHAT_ID/CHAT_ID/GUARD_CHAT_ID까지 자동 탐색해 알림 chat 없음 문제를 줄인다.
+# - 전략 후보품질 확인 기간에는 정식/복기 OPEN 한도를 크게 완화한다.
+# - 후보/로그/결과 파일이 끝없이 커지지 않도록 오래된 줄을 자동 보존 개수 기준으로 정리한다.
+# - 전략 판단은 하지 않는다. 후보파일을 읽고 OPEN/CLOSED 장부만 담당한다.
+VERSION = "paper_bot_v0.12"
+
+# v0.7 기본값은 저장된 control 파일에 값이 없을 때 적용된다.
+try:
+    DEFAULT_CONTROL.update({
+        "max_open_strict": 80,
+        "max_open_shadow": 120,
+        "max_new_per_cycle": 24,
+        "auto_prune_files": True,
+        "candidate_events_keep_lines": 12000,
+        "paper_candidates_keep_lines": 5000,
+        "shadow_candidates_keep_lines": 12000,
+        "closed_keep_lines": 5000,
+        "log_keep_lines": 500,
+        "error_keep_lines": 300,
+        "auto_close_stale_open": True,
+        "stale_open_minutes": 240,
+    })
+except Exception:
+    pass
+
+
+def _v07_int_control(control: Dict[str, Any], key: str, default: int) -> int:
+    try:
+        return max(0, int(float(control.get(key, default))))
+    except Exception:
+        return int(default)
+
+
+def get_notify_chat_id() -> str:
+    # v0.7: paper 전용값이 없으면 메인봇/가드봇에서 쓰던 chat id를 순서대로 재사용한다.
+    for key in [
+        "PAPER_CHAT_ID",
+        "PAPER_BOT_CHAT_ID",
+        "PAPER_BOT_NOTIFY_CHAT_ID",
+        "PAPER_BOT_ALLOWED_CHAT_ID",
+        "CHAT_ID",
+        "TELEGRAM_CHAT_ID",
+        "GUARD_CHAT_ID",
+    ]:
+        value = os.environ.get(key, "").strip()
+        if value:
+            return value
+    return ""
+
+
+def get_notify_chat_source() -> str:
+    for key in [
+        "PAPER_CHAT_ID",
+        "PAPER_BOT_CHAT_ID",
+        "PAPER_BOT_NOTIFY_CHAT_ID",
+        "PAPER_BOT_ALLOWED_CHAT_ID",
+        "CHAT_ID",
+        "TELEGRAM_CHAT_ID",
+        "GUARD_CHAT_ID",
+    ]:
+        if os.environ.get(key, "").strip():
+            return key
+    return "없음"
+
+
+def _v07_trim_text_file(path: Path, keep_lines: int, label: str) -> str:
+    try:
+        keep_lines = int(keep_lines)
+        if keep_lines <= 0 or not path.exists():
+            return ""
+        rows = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+        if len(rows) <= keep_lines:
+            return ""
+        bak = path.with_name(path.name + f".bak_prune_{time.strftime('%Y%m%d_%H%M%S')}")
+        try:
+            path.replace(bak)
+        except Exception:
+            bak = None
+        tail_rows = rows[-keep_lines:]
+        path.write_text("\n".join(tail_rows).rstrip("\n") + "\n", encoding="utf-8")
+        return f"{label}: {len(rows)}->{len(tail_rows)}"
+    except Exception as exc:
+        log_error(f"v07_trim:{label}", exc)
+        return f"{label}:정리실패"
+
+
+def v07_prune_big_files(control: Dict[str, Any]) -> List[str]:
+    if not bool(control.get("auto_prune_files", True)):
+        return []
+    jobs = [
+        (FILES["candidate_events"], _v07_int_control(control, "candidate_events_keep_lines", 12000), "candidate_events"),
+        (FILES["paper_candidates"], _v07_int_control(control, "paper_candidates_keep_lines", 5000), "paper_candidates"),
+        (FILES["shadow_candidates"], _v07_int_control(control, "shadow_candidates_keep_lines", 12000), "shadow_candidates"),
+        (FILES["closed"], _v07_int_control(control, "closed_keep_lines", 5000), "closed"),
+        (FILES["log"], _v07_int_control(control, "log_keep_lines", 500), "log"),
+        (FILES["error"], _v07_int_control(control, "error_keep_lines", 300), "error"),
+    ]
+    notes = []
+    for path, keep, label in jobs:
+        note = _v07_trim_text_file(path, keep, label)
+        if note:
+            notes.append(note)
+    return notes
+
+
+def v07_autoclose_stale_open(open_pos: Dict[str, Dict[str, Any]], control: Dict[str, Any]) -> List[Dict[str, Any]]:
+    if not bool(control.get("auto_close_stale_open", True)):
+        return []
+    max_min = float_any(control.get("stale_open_minutes"), default=240.0)
+    if max_min <= 0:
+        return []
+    closed_rows: List[Dict[str, Any]] = []
+    now_ts = now()
+    for pos_id, pos in list(open_pos.items()):
+        try:
+            opened_at = float_any(pos.get("opened_at"), default=now_ts)
+            age_min = (now_ts - opened_at) / 60.0
+            if age_min < max_min:
+                continue
+            entry = float_any(pos.get("entry_price"), default=0.0)
+            price = float_any(pos.get("current_price"), pos.get("entry_price"), default=entry)
+            pnl = float_any(pos.get("last_pnl_pct"), default=0.0)
+            row = {
+                "closed_at": now_ts,
+                "closed_at_text": iso_ts(now_ts),
+                "pos_id": pos.get("pos_id") or pos_id,
+                "event_id": pos.get("event_id") or pos_id,
+                "ticker": pos.get("ticker"),
+                "lane": pos.get("lane"),
+                "entry_price": entry,
+                "exit_price": price,
+                "pnl_pct": round(pnl, 4),
+                "peak_pct": round(float_any(pos.get("peak_pct"), default=0.0), 4),
+                "trough_pct": round(float_any(pos.get("trough_pct"), default=0.0), 4),
+                "age_min": round(age_min, 2),
+                "exit_reason": "stale_open_auto_close",
+                "strategy": pos.get("strategy"),
+                "decision": pos.get("decision"),
+                "score": float_any(pos.get("score"), default=0.0),
+                "edge": float_any(pos.get("edge"), default=0.0),
+            }
+            append_jsonl(FILES["closed"], row)
+            closed_rows.append(row)
+            open_pos.pop(pos_id, None)
+        except Exception as exc:
+            log_error("v07_autoclose_stale_open", exc)
+    return closed_rows
+
+
+def notify_config_status() -> Dict[str, Any]:
+    token = os.environ.get("PAPER_BOT_TOKEN", "").strip()
+    chat_id = get_notify_chat_id()
+    return {
+        "token": bool(token),
+        "chat_id": bool(chat_id),
+        "chat_id_tail": str(chat_id)[-4:] if chat_id else "",
+        "chat_source": get_notify_chat_source(),
+        "strict_open_on": bool(load_control().get("notify_on_strict_open", True)),
+        "strict_close_on": bool(load_control().get("notify_on_strict_close", True)),
+        "shadow_on": bool(load_control().get("notify_on_shadow", False)),
+    }
+
+
+def run_cycle() -> Dict[str, Any]:
+    started = now()
+    control = load_control()
+    # 저장된 옛 control 값이 너무 낮아도 v0.7 기본 실험 한도 이하로는 쓰지 않는다.
+    control["max_open_strict"] = max(_v07_int_control(control, "max_open_strict", 80), 80)
+    control["max_open_shadow"] = max(_v07_int_control(control, "max_open_shadow", 120), 120)
+    control["max_new_per_cycle"] = max(_v07_int_control(control, "max_new_per_cycle", 24), 24)
+    with _state_lock:
+        open_pos = load_open()
+        stale_closed = v07_autoclose_stale_open(open_pos, control)
+        counts_before = count_by_lane(open_pos)
+        picked, pick_stats = pick_candidates(control, open_pos)
+        opened = 0
+        opened_items: List[Dict[str, Any]] = []
+        open_fail = 0
+        for pos_id, ev in picked:
+            try:
+                if pos_id not in open_pos:
+                    new_pos = open_position(pos_id, ev, control)
+                    open_pos[pos_id] = new_pos
+                    opened_items.append(new_pos)
+                    opened += 1
+            except Exception as exc:
+                open_fail += 1
+                log_error("open_position", exc)
+
+        closed_items: List[Dict[str, Any]] = list(stale_closed)
+        for pos_id, pos in list(open_pos.items()):
+            try:
+                updated, closed = update_position(pos, control)
+                if closed:
+                    closed_items.append(closed)
+                    open_pos.pop(pos_id, None)
+                    append_jsonl(FILES["closed"], closed)
+                else:
+                    open_pos[pos_id] = updated
+            except Exception as exc:
+                log_error("update_position", exc)
+
+        save_open(open_pos)
+        prune_notes = v07_prune_big_files(control)
+        counts_after = count_by_lane(open_pos)
+        notify_status = notify_config_status()
+        recent_summary = _v06_recent_open_summary(opened_items, closed_items)
+        strict_cap = _v07_int_control(control, "max_open_strict", 80)
+        shadow_cap = _v07_int_control(control, "max_open_shadow", 120)
+        strict_full = counts_after.get("strict", 0) >= strict_cap
+        shadow_full = counts_after.get("shadow", 0) >= shadow_cap
+        status = {
+            "version": VERSION,
+            "updated_at": now(),
+            "updated_at_text": iso_ts(),
+            "running": bool(control.get("running")),
+            "loop_seconds": control.get("loop_seconds"),
+            "opened_this_cycle": opened,
+            "closed_this_cycle": len(closed_items),
+            "stale_closed_this_cycle": len(stale_closed),
+            "open_fail_this_cycle": open_fail,
+            "open_total": len(open_pos),
+            "open_strict": counts_after.get("strict", 0),
+            "open_shadow": counts_after.get("shadow", 0),
+            "closed_total": closed_count(),
+            "pick_stats": pick_stats,
+            "counts_before": counts_before,
+            "capacity": {
+                "max_open_strict": strict_cap,
+                "max_open_shadow": shadow_cap,
+                "strict_full": strict_full,
+                "shadow_full": shadow_full,
+            },
+            "notify": notify_status,
+            "recent_summary": recent_summary,
+            "elapsed_sec": round(now() - started, 3),
+            "files": file_stats(),
+            "flag_exists": FILES["flag"].exists(),
+            "prune_notes": prune_notes[-8:],
+        }
+        save_json(FILES["status"], status)
+        notify_strict_events(opened_items, closed_items, control)
+        log(f"cycle opened={opened} strict={recent_summary['opened_strict']} shadow={recent_summary['opened_shadow']} closed={len(closed_items)} stale={len(stale_closed)} open={len(open_pos)} elapsed={status['elapsed_sec']}s")
+        return status
+
+
+def _v06_status_extra_lines(status: Dict[str, Any], control: Dict[str, Any], open_pos: Dict[str, Dict[str, Any]]) -> List[str]:
+    pick = status.get("pick_stats") if isinstance(status.get("pick_stats"), dict) else {}
+    cap = status.get("capacity") if isinstance(status.get("capacity"), dict) else {}
+    nt = status.get("notify") if isinstance(status.get("notify"), dict) else notify_config_status()
+    recent = status.get("recent_summary") if isinstance(status.get("recent_summary"), dict) else {}
+    prune_notes = status.get("prune_notes") if isinstance(status.get("prune_notes"), list) else []
+    return [
+        f"- 이번 cycle 진입: 전체 +{status.get('opened_this_cycle',0)} / 정식 +{recent.get('opened_strict',0)} / 복기 +{recent.get('opened_shadow',0)} / 종료 +{status.get('closed_this_cycle',0)} / 오래된OPEN정리 {status.get('stale_closed_this_cycle',0)} / 실패 {status.get('open_fail_this_cycle',0)}",
+        f"- 후보 읽기: 정식파일 {pick.get('paper_file',0)} / 복기파일 {pick.get('shadow_file',0)} / 전체파일 {pick.get('events_file',0)} / 중복skip {pick.get('dup_skip',0)} / bad {pick.get('bad_skip',0)}",
+        f"- OPEN 한도: 정식 {len([p for p in open_pos.values() if str(p.get('lane'))=='strict'])}/{cap.get('max_open_strict', control.get('max_open_strict'))} {'FULL' if cap.get('strict_full') else '여유'} / 복기 {len([p for p in open_pos.values() if str(p.get('lane'))=='shadow'])}/{cap.get('max_open_shadow', control.get('max_open_shadow'))} {'FULL' if cap.get('shadow_full') else '여유'}",
+        f"- 알림설정: token {'OK' if nt.get('token') else '없음'} / chat {'OK' if nt.get('chat_id') else '없음'}({nt.get('chat_source','?')}) / strict OPEN {'ON' if nt.get('strict_open_on') else 'OFF'} / strict CLOSE {'ON' if nt.get('strict_close_on') else 'OFF'} / shadow {'ON' if nt.get('shadow_on') else 'OFF'}",
+        f"- 최근 OPEN: {', '.join(recent.get('opened_tickers') or []) if recent.get('opened_tickers') else '-'}",
+        f"- 자동정리: {', '.join(prune_notes) if prune_notes else '대기/없음'}",
+    ]
+
+
+def build_pbatch_text() -> str:
+    fs = file_stats()
+    status = load_json(FILES["status"], {})
+    control = load_control()
+    open_pos = load_open()
+    counts = count_by_lane(open_pos)
+    err_tail = tail_file(FILES["error"], 12)
+    log_tail = tail_file(FILES["log"], 10)
+    if err_tail.startswith("파일 없음") or err_tail.startswith("빈 파일"):
+        err_tail = "오류 없음"
+    extra = _v06_status_extra_lines(status, control, open_pos)
+    lines = [
+        "📦 페이퍼봇 묶음점검 /pbatch",
+        "",
+        f"✅ 버전: {VERSION}",
+        f"- 실행상태: {'ON' if control.get('running') else 'OFF'} / loop {control.get('loop_seconds')}s",
+        f"- 현재 모의보유: 전체 {len(open_pos)} / 정식 {counts.get('strict',0)} / 탈락복기 {counts.get('shadow',0)}",
+        f"- 오늘/누적 종료결과: {closed_count()}건",
+    ]
+    lines.extend(extra)
+    lines.extend([
+        "",
+        "📁 후보/결과 파일",
+        f"- 전체 후보 기록: {fs.get('candidate_events_lines',0)} lines / {fs.get('candidate_events_bytes',0)} bytes",
+        f"- 정식 모의매매: {fs.get('paper_candidates_lines',0)} lines / {fs.get('paper_candidates_bytes',0)} bytes",
+        f"- 탈락 후보 복기: {fs.get('shadow_candidates_lines',0)} lines / {fs.get('shadow_candidates_bytes',0)} bytes",
+        f"- 현재 모의보유 파일: {'있음' if FILES['open'].exists() else '없음'} / {FILES['open'].stat().st_size if FILES['open'].exists() else 0} bytes",
+        f"- 종료결과 파일: {fs.get('closed_lines',0)} lines / {fs.get('closed_bytes',0)} bytes",
+        "",
+        "⚠️ 오류",
+        err_tail,
+        "",
+        "🧾 최근 로그",
+        log_tail,
+        "",
+        "판독",
+        "- v0.7은 전략 후보품질 확인을 위해 OPEN 한도를 크게 완화했다.",
+        "- 오래된 OPEN은 CLOSED로 넘겨 장부를 보존하고, 큰 jsonl/log 파일은 최근 줄만 남긴다.",
+        "- 메인봇은 후보 전달, 페이퍼봇은 모의 OPEN/CLOSED 알림과 장부만 담당한다.",
+    ])
+    return "\n".join(lines)
+
+
+# ============================ paper_bot_v0.8 force-control/chat-learn overrides ============================
+# 목적:
+# - v0.7에서 __main__ 뒤에 붙어 실행되지 않던 한도/정리 override를 실제 실행 전 정의한다.
+# - 기존 paper_bot_control.json의 낮은 값(정식 8/복기 20)이 새 기본값을 덮어쓰지 못하게 보정한다.
+# - PAPER_CHAT_ID가 없어도 사용자가 /pbatch 같은 명령을 보낸 chat_id를 저장해 OPEN/CLOSED 알림에 재사용한다.
+VERSION = "paper_bot_v0.12"
+CHAT_ID_CACHE_FILE = BASE_DIR / "paper_bot_chat_id.json"
+
+try:
+    _ORIGINAL_LOAD_CONTROL_V08 = load_control
+except Exception:
+    _ORIGINAL_LOAD_CONTROL_V08 = None
+
+
+def _v08_enforce_control_defaults(control: Dict[str, Any]) -> Dict[str, Any]:
+    control = dict(control or {})
+    floors = {
+        "max_open_strict": 80,
+        "max_open_shadow": 120,
+        "max_new_per_cycle": 24,
+        "stale_open_minutes": 240,
+    }
+    for key, floor in floors.items():
+        try:
+            current = int(float(control.get(key, floor)))
+        except Exception:
+            current = floor
+        if current < floor:
+            control[key] = floor
+    control.setdefault("notify_on_strict_open", True)
+    control.setdefault("notify_on_strict_close", True)
+    control.setdefault("notify_on_shadow", False)
+    control.setdefault("auto_prune_files", True)
+    control.setdefault("auto_close_stale_open", True)
+    control.setdefault("candidate_events_keep_lines", 12000)
+    control.setdefault("paper_candidates_keep_lines", 5000)
+    control.setdefault("shadow_candidates_keep_lines", 12000)
+    control.setdefault("closed_keep_lines", 5000)
+    control.setdefault("log_keep_lines", 500)
+    control.setdefault("error_keep_lines", 300)
+    return control
+
+
+def load_control() -> Dict[str, Any]:
+    if _ORIGINAL_LOAD_CONTROL_V08 is not None:
+        control = _ORIGINAL_LOAD_CONTROL_V08()
+    else:
+        control = DEFAULT_CONTROL.copy()
+        saved = load_json(FILES["control"], {})
+        if isinstance(saved, dict):
+            control.update(saved)
+    return _v08_enforce_control_defaults(control)
+
+
+def _v08_save_seen_chat_id(chat_id: Any, source: str = "telegram_command") -> None:
+    try:
+        if not chat_id:
+            return
+        data = {"chat_id": str(chat_id), "source": source, "updated_at": now(), "updated_at_text": iso_ts()}
+        save_json(CHAT_ID_CACHE_FILE, data)
+    except Exception as exc:
+        log_error("v08_save_seen_chat_id", exc)
+
+
+def _v08_cached_chat_id() -> str:
+    try:
+        obj = load_json(CHAT_ID_CACHE_FILE, {})
+        val = str(obj.get("chat_id") or "").strip() if isinstance(obj, dict) else ""
+        return val
+    except Exception:
+        return ""
+
+
+def get_notify_chat_id() -> str:
+    for key in [
+        "PAPER_CHAT_ID",
+        "PAPER_BOT_CHAT_ID",
+        "PAPER_BOT_NOTIFY_CHAT_ID",
+        "PAPER_BOT_ALLOWED_CHAT_ID",
+        "CHAT_ID",
+        "TELEGRAM_CHAT_ID",
+        "GUARD_CHAT_ID",
+    ]:
+        value = os.environ.get(key, "").strip()
+        if value:
+            return value
+    return _v08_cached_chat_id()
+
+
+def get_notify_chat_source() -> str:
+    for key in [
+        "PAPER_CHAT_ID",
+        "PAPER_BOT_CHAT_ID",
+        "PAPER_BOT_NOTIFY_CHAT_ID",
+        "PAPER_BOT_ALLOWED_CHAT_ID",
+        "CHAT_ID",
+        "TELEGRAM_CHAT_ID",
+        "GUARD_CHAT_ID",
+    ]:
+        if os.environ.get(key, "").strip():
+            return key
+    return "telegram_command_cache" if _v08_cached_chat_id() else "없음"
+
+
+def notify_config_status() -> Dict[str, Any]:
+    token = os.environ.get("PAPER_BOT_TOKEN", "").strip()
+    chat_id = get_notify_chat_id()
+    control = load_control()
+    return {
+        "token": bool(token),
+        "chat_id": bool(chat_id),
+        "chat_id_tail": str(chat_id)[-4:] if chat_id else "",
+        "chat_source": get_notify_chat_source(),
+        "strict_open_on": bool(control.get("notify_on_strict_open", True)),
+        "strict_close_on": bool(control.get("notify_on_strict_close", True)),
+        "shadow_on": bool(control.get("notify_on_shadow", False)),
+    }
+
+
+def telegram_loop(token: str) -> None:
+    global _update_offset
+    log("telegram_loop started")
+    allowed = os.environ.get("PAPER_BOT_ALLOWED_CHAT_ID", "").strip()
+    while not _stop_event.is_set():
+        try:
+            updates = tg_api(token, "getUpdates", {"offset": _update_offset + 1, "timeout": 20})
+            for upd in updates.get("result", []):
+                _update_offset = max(_update_offset, int(upd.get("update_id", 0)))
+                msg = upd.get("message") or upd.get("edited_message") or {}
+                chat = msg.get("chat") or {}
+                chat_id = chat.get("id")
+                text = str(msg.get("text") or "").strip()
+                if not chat_id or not text:
+                    continue
+                if allowed and str(chat_id) != allowed:
+                    send_message(token, chat_id, "허용된 채팅방이 아니야.")
+                    continue
+                _v08_save_seen_chat_id(chat_id)
+                reply = handle_command(text)
+                send_message(token, chat_id, reply)
+        except Exception as exc:
+            log_error("telegram_loop", exc)
+            time.sleep(2)
+    log("telegram_loop stopped")
+
+
+# v0.8에서 상태판 함수가 항상 최신 control/chat을 보게 다시 정의한다.
+def _v06_status_extra_lines(status: Dict[str, Any], control: Dict[str, Any], open_pos: Dict[str, Dict[str, Any]]) -> List[str]:
+    control = load_control()
+    pick = status.get("pick_stats") if isinstance(status.get("pick_stats"), dict) else {}
+    cap = status.get("capacity") if isinstance(status.get("capacity"), dict) else {}
+    nt = status.get("notify") if isinstance(status.get("notify"), dict) else notify_config_status()
+    recent = status.get("recent_summary") if isinstance(status.get("recent_summary"), dict) else {}
+    prune_notes = status.get("prune_notes") if isinstance(status.get("prune_notes"), list) else []
+    strict_cap = max(int(cap.get("max_open_strict", control.get("max_open_strict", 80))), 80)
+    shadow_cap = max(int(cap.get("max_open_shadow", control.get("max_open_shadow", 120))), 120)
+    strict_count = len([p for p in open_pos.values() if str(p.get('lane')) == 'strict'])
+    shadow_count = len([p for p in open_pos.values() if str(p.get('lane')) == 'shadow'])
+    return [
+        f"- 이번 cycle 진입: 전체 +{status.get('opened_this_cycle',0)} / 정식 +{recent.get('opened_strict',0)} / 복기 +{recent.get('opened_shadow',0)} / 종료 +{status.get('closed_this_cycle',0)} / 오래된OPEN정리 {status.get('stale_closed_this_cycle',0)} / 실패 {status.get('open_fail_this_cycle',0)}",
+        f"- 후보 읽기: 정식파일 {pick.get('paper_file',0)} / 복기파일 {pick.get('shadow_file',0)} / 전체파일 {pick.get('events_file',0)} / 중복skip {pick.get('dup_skip',0)} / bad {pick.get('bad_skip',0)}",
+        f"- OPEN 한도: 정식 {strict_count}/{strict_cap} {'FULL' if strict_count >= strict_cap else '여유'} / 복기 {shadow_count}/{shadow_cap} {'FULL' if shadow_count >= shadow_cap else '여유'}",
+        f"- 알림설정: token {'OK' if nt.get('token') else '없음'} / chat {'OK' if nt.get('chat_id') else '없음'}({nt.get('chat_source','?')}) / strict OPEN {'ON' if nt.get('strict_open_on') else 'OFF'} / strict CLOSE {'ON' if nt.get('strict_close_on') else 'OFF'} / shadow {'ON' if nt.get('shadow_on') else 'OFF'}",
+        f"- 최근 OPEN: {', '.join(recent.get('opened_tickers') or []) if recent.get('opened_tickers') else '-'}",
+        f"- 자동정리: {', '.join(prune_notes) if prune_notes else '대기/없음'}",
+    ]
+# ============================ end paper_bot_v0.8 overrides ============================
+
+
+# ============================ paper_bot_v0.9 duplicate-open guard overrides ============================
+# 목적:
+# - 후보품질 검증 단계라 한 cycle 신규 OPEN 수는 낮게 막지 않는다.
+# - 단, 같은 코인이 이미 OPEN이면 추가 OPEN은 결과를 왜곡하므로 막고 사유를 기록한다.
+# - 돈 0.0백만은 실제 0인지 정보없음인지 메인봇 event의 money_status를 그대로 표시한다.
+VERSION = "paper_bot_v0.12"
+
+try:
+    DEFAULT_CONTROL.update({
+        "max_open_strict": 160,
+        "max_open_shadow": 240,
+        "max_new_per_cycle": 9999,
+        "block_duplicate_open_ticker": True,
+        "notify_on_strict_open": True,
+        "notify_on_strict_close": True,
+        "notify_on_shadow": False,
+        "auto_prune_files": True,
+        "auto_close_stale_open": True,
+    })
+except Exception:
+    pass
+
+
+def _v09_enforce_control_defaults(control: Dict[str, Any]) -> Dict[str, Any]:
+    control = dict(control or {})
+    floors = {
+        "max_open_strict": 160,
+        "max_open_shadow": 240,
+        "max_new_per_cycle": 9999,
+        "stale_open_minutes": 240,
+    }
+    for key, floor in floors.items():
+        try:
+            current = int(float(control.get(key, floor)))
+        except Exception:
+            current = floor
+        if current < floor:
+            control[key] = floor
+    control.setdefault("block_duplicate_open_ticker", True)
+    control.setdefault("notify_on_strict_open", True)
+    control.setdefault("notify_on_strict_close", True)
+    control.setdefault("notify_on_shadow", False)
+    control.setdefault("auto_prune_files", True)
+    control.setdefault("auto_close_stale_open", True)
+    control.setdefault("candidate_events_keep_lines", 12000)
+    control.setdefault("paper_candidates_keep_lines", 5000)
+    control.setdefault("shadow_candidates_keep_lines", 12000)
+    control.setdefault("closed_keep_lines", 5000)
+    control.setdefault("log_keep_lines", 500)
+    control.setdefault("error_keep_lines", 300)
+    return control
+
+try:
+    _ORIGINAL_LOAD_CONTROL_V09 = load_control
+except Exception:
+    _ORIGINAL_LOAD_CONTROL_V09 = None
+
+
+def load_control() -> Dict[str, Any]:
+    if _ORIGINAL_LOAD_CONTROL_V09 is not None:
+        control = _ORIGINAL_LOAD_CONTROL_V09()
+    else:
+        control = DEFAULT_CONTROL.copy()
+        saved = load_json(FILES["control"], {})
+        if isinstance(saved, dict):
+            control.update(saved)
+    return _v09_enforce_control_defaults(control)
+
+
+def _v09_open_ticker_set(open_pos: Dict[str, Dict[str, Any]]) -> set[str]:
+    out = set()
+    for p in (open_pos or {}).values():
+        t = normalize_ticker((p or {}).get("ticker"))
+        if t:
+            out.add(t)
+    return out
+
+
+def _v09_money_text_from_pos(pos: Dict[str, Any]) -> str:
+    raw = pos.get("raw") if isinstance(pos.get("raw"), dict) else {}
+    money = float_any(pos.get("money_flow"), pos.get("turnover_5m"), raw.get("money_flow"), raw.get("turnover_5m"), default=0.0)
+    status = str(pos.get("money_status") or raw.get("money_status") or "").strip()
+    if money >= 1_000_000:
+        return f"{money/1_000_000:.1f}백만"
+    if money > 0:
+        return f"{money:,.0f}원"
+    if status in {"정보없음", "missing", "no_field"}:
+        return "정보없음"
+    if status in {"실제0또는미세", "zero_or_tiny", "zero"}:
+        return "0/미세"
+    return "확인중"
+
+
+def open_position(pos_id: str, ev: Dict[str, Any], control: Dict[str, Any]) -> Dict[str, Any]:
+    ticker = normalize_ticker(ev.get("ticker") or ev.get("market") or ev.get("symbol")) or "UNKNOWN"
+    detected_price = get_event_price(ev)
+    live_price = fetch_bithumb_price(ticker) or detected_price
+    entry_price = live_price if live_price > 0 else detected_price
+    lane = str(ev.get("lane") or "shadow")
+    pos = {
+        "pos_id": pos_id,
+        "event_id": pos_id,
+        "ticker": ticker,
+        "lane": lane,
+        "opened_at": now(),
+        "opened_at_text": iso_ts(),
+        "entry_price": entry_price,
+        "detected_price": detected_price,
+        "current_price": entry_price,
+        "peak_pct": 0.0,
+        "trough_pct": 0.0,
+        "last_update": now(),
+        "strategy": ev.get("strategy") or ev.get("route") or ev.get("section") or "unknown",
+        "decision": ev.get("decision") or ev.get("quality_category") or "",
+        "score": float_any(ev.get("score"), ev.get("leader_score"), default=0.0),
+        "edge": float_any(ev.get("edge"), ev.get("edge_score"), default=0.0),
+        "reason": ev.get("reason") or ev.get("why") or ev.get("block_reason") or "",
+        "change_5": float_any(ev.get("change_5"), ev.get("chg_5m"), default=0.0),
+        "change_30": float_any(ev.get("change_30"), ev.get("chg_30m"), default=0.0),
+        "vol_ratio": float_any(ev.get("vol_ratio"), ev.get("volume_ratio_std"), default=0.0),
+        "money_flow": float_any(ev.get("money_flow"), ev.get("turnover_5m"), default=0.0),
+        "turnover_5m": float_any(ev.get("turnover_5m"), ev.get("money_flow"), default=0.0),
+        "money_status": ev.get("money_status") or "정보없음",
+        "raw": ev,
+    }
+    return pos
+
+
+def run_cycle() -> Dict[str, Any]:
+    started = now()
+    control = load_control()
+    with _state_lock:
+        open_pos = load_open()
+        stale_closed = v07_autoclose_stale_open(open_pos, control)
+        counts_before = count_by_lane(open_pos)
+        picked, pick_stats = pick_candidates(control, open_pos)
+        opened = 0
+        opened_items: List[Dict[str, Any]] = []
+        open_fail = 0
+        duplicate_ticker_skip = 0
+        duplicate_tickers: List[str] = []
+        open_tickers = _v09_open_ticker_set(open_pos)
+        for pos_id, ev in picked:
+            try:
+                ticker = normalize_ticker(ev.get("ticker") or ev.get("market") or ev.get("symbol")) or "UNKNOWN"
+                if bool(control.get("block_duplicate_open_ticker", True)) and ticker in open_tickers:
+                    duplicate_ticker_skip += 1
+                    if ticker not in duplicate_tickers and len(duplicate_tickers) < 12:
+                        duplicate_tickers.append(ticker)
+                    continue
+                if pos_id not in open_pos:
+                    new_pos = open_position(pos_id, ev, control)
+                    open_pos[pos_id] = new_pos
+                    opened_items.append(new_pos)
+                    opened += 1
+                    if ticker:
+                        open_tickers.add(ticker)
+            except Exception as exc:
+                open_fail += 1
+                log_error("open_position", exc)
+
+        closed_items: List[Dict[str, Any]] = list(stale_closed)
+        for pos_id, pos in list(open_pos.items()):
+            try:
+                updated, closed = update_position(pos, control)
+                if closed:
+                    closed_items.append(closed)
+                    open_pos.pop(pos_id, None)
+                    append_jsonl(FILES["closed"], closed)
+                else:
+                    open_pos[pos_id] = updated
+            except Exception as exc:
+                log_error("update_position", exc)
+
+        save_open(open_pos)
+        prune_notes = v07_prune_big_files(control)
+        counts_after = count_by_lane(open_pos)
+        notify_status = notify_config_status()
+        recent_summary = _v06_recent_open_summary(opened_items, closed_items)
+        strict_cap = int(control.get("max_open_strict", 160))
+        shadow_cap = int(control.get("max_open_shadow", 240))
+        status = {
+            "version": VERSION,
+            "updated_at": now(),
+            "updated_at_text": iso_ts(),
+            "running": bool(control.get("running")),
+            "loop_seconds": control.get("loop_seconds"),
+            "opened_this_cycle": opened,
+            "closed_this_cycle": len(closed_items),
+            "stale_closed_this_cycle": len(stale_closed),
+            "open_fail_this_cycle": open_fail,
+            "duplicate_ticker_skip": duplicate_ticker_skip,
+            "duplicate_tickers": duplicate_tickers,
+            "open_total": len(open_pos),
+            "open_strict": counts_after.get("strict", 0),
+            "open_shadow": counts_after.get("shadow", 0),
+            "closed_total": closed_count(),
+            "pick_stats": pick_stats,
+            "counts_before": counts_before,
+            "capacity": {
+                "max_open_strict": strict_cap,
+                "max_open_shadow": shadow_cap,
+                "max_new_per_cycle": int(control.get("max_new_per_cycle", 9999)),
+                "strict_full": counts_after.get("strict", 0) >= strict_cap,
+                "shadow_full": counts_after.get("shadow", 0) >= shadow_cap,
+                "duplicate_ticker_block": bool(control.get("block_duplicate_open_ticker", True)),
+            },
+            "notify": notify_status,
+            "recent_summary": recent_summary,
+            "elapsed_sec": round(now() - started, 3),
+            "files": file_stats(),
+            "flag_exists": FILES["flag"].exists(),
+            "prune_notes": prune_notes[-8:],
+        }
+        save_json(FILES["status"], status)
+        notify_strict_events(opened_items, closed_items, control)
+        log(f"cycle opened={opened} strict={recent_summary['opened_strict']} shadow={recent_summary['opened_shadow']} closed={len(closed_items)} dup_ticker={duplicate_ticker_skip} stale={len(stale_closed)} open={len(open_pos)} elapsed={status['elapsed_sec']}s")
+        return status
+
+
+def _format_strict_open_alert(pos: Dict[str, Any]) -> str:
+    raw = pos.get("raw") if isinstance(pos.get("raw"), dict) else {}
+    ticker = pos.get("ticker") or raw.get("ticker") or "?"
+    price = float_any(pos.get("entry_price"), raw.get("price"), default=0.0)
+    score = float_any(pos.get("score"), raw.get("score"), default=0.0)
+    edge = float_any(pos.get("edge"), raw.get("edge_score"), default=score)
+    ch5 = float_any(pos.get("change_5"), raw.get("change_5"), default=0.0)
+    vol = float_any(pos.get("vol_ratio"), raw.get("vol_ratio"), raw.get("volume_ratio_std"), default=0.0)
+    reason = pos.get("reason") or raw.get("reason") or raw.get("block_reason") or ""
+    return (
+        "✅ 정식 모의매수 OPEN\n"
+        f"- 코인: {ticker}\n"
+        f"- 진입가: {format_price(price)}\n"
+        f"- 전략/경로: {pos.get('strategy') or raw.get('strategy') or '-'}\n"
+        f"- 점수: {score:.2f} / edge {edge:.2f}\n"
+        f"- 5분 {ch5:+.2f}% / 거래량 {vol:.2f}배 / 돈 {_v09_money_text_from_pos(pos)}\n"
+        f"- 이유: {reason}\n"
+        "- 구분: 실제 주문 아님 / 모의매매 장부 OPEN"
+    )
+
+
+def _v06_status_extra_lines(status: Dict[str, Any], control: Dict[str, Any], open_pos: Dict[str, Dict[str, Any]]) -> List[str]:
+    control = load_control()
+    pick = status.get("pick_stats") if isinstance(status.get("pick_stats"), dict) else {}
+    cap = status.get("capacity") if isinstance(status.get("capacity"), dict) else {}
+    nt = status.get("notify") if isinstance(status.get("notify"), dict) else notify_config_status()
+    recent = status.get("recent_summary") if isinstance(status.get("recent_summary"), dict) else {}
+    prune_notes = status.get("prune_notes") if isinstance(status.get("prune_notes"), list) else []
+    strict_cap = int(cap.get("max_open_strict", control.get("max_open_strict", 160)))
+    shadow_cap = int(cap.get("max_open_shadow", control.get("max_open_shadow", 240)))
+    strict_count = len([p for p in open_pos.values() if str(p.get('lane')) == 'strict'])
+    shadow_count = len([p for p in open_pos.values() if str(p.get('lane')) == 'shadow'])
+    dup = int(status.get("duplicate_ticker_skip", 0) or 0)
+    dup_names = ", ".join(status.get("duplicate_tickers") or []) if isinstance(status.get("duplicate_tickers"), list) else ""
+    return [
+        f"- 이번 cycle 진입: 전체 +{status.get('opened_this_cycle',0)} / 정식 +{recent.get('opened_strict',0)} / 복기 +{recent.get('opened_shadow',0)} / 종료 +{status.get('closed_this_cycle',0)} / 오래된OPEN정리 {status.get('stale_closed_this_cycle',0)} / 실패 {status.get('open_fail_this_cycle',0)}",
+        f"- 후보 읽기: 정식파일 {pick.get('paper_file',0)} / 복기파일 {pick.get('shadow_file',0)} / 전체파일 {pick.get('events_file',0)} / 이벤트중복skip {pick.get('dup_skip',0)} / 같은코인skip {dup}{(' ('+dup_names+')') if dup_names else ''} / bad {pick.get('bad_skip',0)}",
+        f"- OPEN 한도: 정식 {strict_count}/{strict_cap} {'FULL' if strict_count >= strict_cap else '여유'} / 복기 {shadow_count}/{shadow_cap} {'FULL' if shadow_count >= shadow_cap else '여유'} / cycle 제한 사실상 해제 {cap.get('max_new_per_cycle', control.get('max_new_per_cycle',9999))}",
+        f"- 알림설정: token {'OK' if nt.get('token') else '없음'} / chat {'OK' if nt.get('chat_id') else '없음'}({nt.get('chat_source','?')}) / strict OPEN {'ON' if nt.get('strict_open_on') else 'OFF'} / strict CLOSE {'ON' if nt.get('strict_close_on') else 'OFF'} / shadow {'ON' if nt.get('shadow_on') else 'OFF'}",
+        f"- 최근 OPEN: {', '.join(recent.get('opened_tickers') or []) if recent.get('opened_tickers') else '-'}",
+        f"- 자동정리: {', '.join(prune_notes) if prune_notes else '대기/없음'}",
+    ]
+
+# ============================ end paper_bot_v0.9 overrides ============================
+
+
+# ============================ paper_bot_v0.12 slippage patch ============================
+VERSION = "paper_bot_v0.12"
+DEFAULT_CONTROL.update({
+    # 실제 체결이 아니라 모의매매 보수 보정값. 매수는 비싸게, 매도는 싸게 잡는다.
+    "buy_slippage_pct": 0.05,
+    "sell_slippage_pct": 0.05,
+})
+
+def _slip_pct(control: Dict[str, Any], key: str, default: float = 0.05) -> float:
+    v = float_any(control.get(key), default=default)
+    if v < 0:
+        return 0.0
+    if v > 1.0:
+        return 1.0
+    return v
+
+def apply_buy_slippage(price: float, control: Dict[str, Any]) -> float:
+    price = float_any(price, default=0.0)
+    if price <= 0:
+        return 0.0
+    return price * (1.0 + _slip_pct(control, "buy_slippage_pct") / 100.0)
+
+def apply_sell_slippage(price: float, control: Dict[str, Any]) -> float:
+    price = float_any(price, default=0.0)
+    if price <= 0:
+        return 0.0
+    return price * (1.0 - _slip_pct(control, "sell_slippage_pct") / 100.0)
+
+def open_position(pos_id: str, ev: Dict[str, Any], control: Dict[str, Any]) -> Dict[str, Any]:
+    ticker = normalize_ticker(ev.get("ticker") or ev.get("market") or ev.get("symbol")) or "UNKNOWN"
+    detected_price = get_event_price(ev)
+    live_price = fetch_bithumb_price(ticker) or detected_price
+    raw_entry_price = live_price if live_price > 0 else detected_price
+    entry_price = apply_buy_slippage(raw_entry_price, control)
+    lane = str(ev.get("lane") or "shadow")
+    pos = {
+        "pos_id": pos_id,
+        "event_id": pos_id,
+        "ticker": ticker,
+        "lane": lane,
+        "opened_at": now(),
+        "opened_at_text": iso_ts(),
+        "entry_price": entry_price,
+        "raw_entry_price": raw_entry_price,
+        "buy_slippage_pct": _slip_pct(control, "buy_slippage_pct"),
+        "sell_slippage_pct": _slip_pct(control, "sell_slippage_pct"),
+        "detected_price": detected_price,
+        "current_price": raw_entry_price,
+        "peak_pct": 0.0,
+        "trough_pct": 0.0,
+        "last_update": now(),
+        "strategy": ev.get("strategy") or ev.get("route") or ev.get("section") or "unknown",
+        "decision": ev.get("decision") or ev.get("quality_category") or "",
+        "score": float_any(ev.get("score"), ev.get("leader_score"), default=0.0),
+        "edge": float_any(ev.get("edge"), ev.get("edge_score"), default=0.0),
+        "reason": ev.get("reason") or ev.get("why") or ev.get("block_reason") or "",
+        "change_5": float_any(ev.get("change_5"), ev.get("chg_5m"), default=0.0),
+        "change_30": float_any(ev.get("change_30"), ev.get("chg_30m"), default=0.0),
+        "vol_ratio": float_any(ev.get("vol_ratio"), ev.get("volume_ratio_std"), default=0.0),
+        "money_flow": float_any(ev.get("money_flow"), ev.get("turnover_5m"), default=0.0),
+        "turnover_5m": float_any(ev.get("turnover_5m"), ev.get("money_flow"), default=0.0),
+        "money_status": ev.get("money_status") or "정보없음",
+        "raw": ev,
+    }
+    return pos
+
+def update_position(pos: Dict[str, Any], control: Dict[str, Any]) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
+    ticker = pos.get("ticker") or ""
+    entry = float_any(pos.get("entry_price"), default=0.0)
+    if entry <= 0:
+        return pos, None
+    raw_price = fetch_bithumb_price(ticker) or float_any(pos.get("current_price"), pos.get("raw_entry_price"), pos.get("entry_price"), default=entry)
+    sell_slip = _slip_pct(control, "sell_slippage_pct")
+    exit_mark_price = apply_sell_slippage(raw_price, control)
+    pos["current_price"] = raw_price
+    pos["last_exit_mark_price"] = exit_mark_price
+    pos["sell_slippage_pct"] = sell_slip
+    gross = ((exit_mark_price / entry) - 1.0) * 100.0
+    net = gross - float_any(control.get("fee_pct_roundtrip"), default=0.10)
+    pos["last_pnl_pct"] = net
+    pos["peak_pct"] = max(float_any(pos.get("peak_pct"), default=0.0), net)
+    pos["trough_pct"] = min(float_any(pos.get("trough_pct"), default=0.0), net)
+    pos["last_update"] = now()
+
+    age_min = (now() - float_any(pos.get("opened_at"), default=now())) / 60.0
+    peak = float_any(pos.get("peak_pct"), default=0.0)
+    exit_reason: Optional[str] = None
+
+    if net <= float_any(control.get("stop_loss_pct"), default=-1.2):
+        exit_reason = "stop_loss"
+    elif peak >= float_any(control.get("protect_trigger_pct"), default=0.9) and net <= float_any(control.get("protect_floor_pct"), default=0.2):
+        exit_reason = "protect_stop_after_tp"
+    elif net >= float_any(control.get("take_profit_pct"), default=1.2):
+        exit_reason = "take_profit"
+    elif age_min >= float_any(control.get("slow_minutes"), default=20) and peak < float_any(control.get("slow_peak_under_pct"), default=0.25) and net <= 0.10:
+        exit_reason = "slow_no_progress"
+    elif age_min >= float_any(control.get("time_exit_minutes"), default=120):
+        exit_reason = "time_exit"
+
+    if not exit_reason:
+        return pos, None
+
+    closed = {
+        "closed_at": now(),
+        "closed_at_text": iso_ts(),
+        "pos_id": pos.get("pos_id"),
+        "event_id": pos.get("event_id"),
+        "ticker": ticker,
+        "lane": pos.get("lane"),
+        "entry_price": entry,
+        "raw_entry_price": float_any(pos.get("raw_entry_price"), default=entry),
+        "raw_exit_price": raw_price,
+        "exit_price": exit_mark_price,
+        "buy_slippage_pct": float_any(pos.get("buy_slippage_pct"), default=_slip_pct(control, "buy_slippage_pct")),
+        "sell_slippage_pct": sell_slip,
+        "pnl_pct": round(net, 4),
+        "peak_pct": round(peak, 4),
+        "trough_pct": round(float_any(pos.get("trough_pct"), default=0.0), 4),
+        "age_min": round(age_min, 2),
+        "exit_reason": exit_reason,
+        "strategy": pos.get("strategy"),
+        "decision": pos.get("decision"),
+        "score": pos.get("score"),
+        "edge": pos.get("edge"),
+    }
+    return pos, closed
+
+# ============================ end paper_bot_v0.12 patch ============================
+
+
+
+# ============================ paper_bot_v0.12 slippage explanation patch ============================
+VERSION = "paper_bot_v0.12"
+DEFAULT_CONTROL.update({
+    "slippage_mode_note": "1차 고정값: 실전 호가창 기반 아님 / 다음 단계에서 거래대금·정보없음·급등속도 반영 예정",
+})
+
+def _v11_slippage_lines(control: Dict[str, Any]) -> List[str]:
+    buy = _slip_pct(control, "buy_slippage_pct") if callable(globals().get('_slip_pct')) else float_any(control.get('buy_slippage_pct'), default=0.05)
+    sell = _slip_pct(control, "sell_slippage_pct") if callable(globals().get('_slip_pct')) else float_any(control.get('sell_slippage_pct'), default=0.05)
+    fee = float_any(control.get('fee_pct_roundtrip'), default=0.10)
+    return [
+        f"- 슬리피지: 매수 +{buy:.2f}% / 매도 -{sell:.2f}% / 왕복수수료 {fee:.2f}%",
+        "- 설명: 현재는 1차 고정값이라 실전 호가창 기반 계산은 아님",
+        "- 다음 개선: 거래대금 부족, 돈흐름 정보없음, 알림가 대비 급등폭을 반영한 동적 슬리피지",
+    ]
+
+_prev_v06_status_extra_lines = _v06_status_extra_lines
+
+def _v06_status_extra_lines(status: Dict[str, Any], control: Dict[str, Any], open_pos: Dict[str, Dict[str, Any]]) -> List[str]:
+    lines = _prev_v06_status_extra_lines(status, control, open_pos)
+    try:
+        lines += _v11_slippage_lines(load_control())
+    except Exception:
+        lines += ["- 슬리피지: 설명 생성 실패"]
+    return lines
+# ============================ end paper_bot_v0.12 patch ============================
+
+if __name__ == "__main__":
+    raise SystemExit(main())
