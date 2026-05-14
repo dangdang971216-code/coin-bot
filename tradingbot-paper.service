@@ -1,0 +1,22 @@
+[Unit]
+Description=Coinbot Paper Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dangdang971216
+WorkingDirectory=/home/dangdang971216/trading_bot
+EnvironmentFile=-/home/dangdang971216/trading_bot/guard.env
+Environment=TRADING_BOT_DIR=/home/dangdang971216/trading_bot
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 /home/dangdang971216/trading_bot/paper_bot.py --bot
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=15
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
