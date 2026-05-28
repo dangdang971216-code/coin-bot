@@ -1,0 +1,226 @@
+코인봇 최신 묶음 요약집
+- 생성: 2026-05-28 01:02:57
+- 메인봇: 수익형 v2.13.422 / v468_v422_recheck_info_freshness_2026-05-27
+- batch 접수지연: 0.81s / 처리합계: 4.49s
+
+[명령 시간표]
+- ✅ /health: 0.28s / OK
+- ✅ /pstatus: 0.01s / OK
+- ✅ /candidate_reason: 0.00s / OK
+- ✅ /s1_lifecycle: 0.00s / OK
+- ✅ /version_score: 0.00s / OK
+- ✅ /popen: 0.00s / OK
+- ✅ /errorlog: 0.00s / OK
+
+[현재 상태]
+- worker 평가: 454 / strategy age 4.2s
+- paper: OPEN 0 / CLOSED누적 375 / status age 12.0s
+- 후보: S1 0 / S2 0 / S3 0 / 후보 cache age 22.4s
+- S1 막힘 TOP: -
+
+[복기 요약]
+- 진짜놓침 0 / 아까움 0 / 위험상승 3 / 안산게맞음 6 / 추적중 2
+- 놓침·아까움 사유 TOP: -
+
+[판단 원칙]
+- S1/S2/S3 기준은 이 요약집 생성으로 변경되지 않음.
+- 5/10/20분 안에 오른 진짜놓침만 승격 검토 근거.
+- 결과만 오른 위험상승 후보는 조건 완화 근거 제외.
+
+[/health 출력 요약]
+🧭 건강상태 /health · v468 single-cache
+✅ 전체판독: worker 9/9 정상 · paper/trace 정상 · 자원 정상
+- 메인봇 수익형 v2.13.422 / v468_v422_recheck_info_freshness_2026-05-27 / uptime 56915s
+- 처리시간: 0.05s / 원칙: cache/status만 읽고 대기·재계산 없음
+- 정보: 평가 454 / 시세 454/454 / micro 307/454 / 둘다 307/454
+- 후보 생애주기: S1 0 / S2 2 / S3 54
+- 후보파일: active latest 56개 / 고정 40개 제한 아님 / 전체평가 454개
+- S1 판정: S1/S2/S3 사유 cache 표시
+- S1 막힘 상위: -
+- paper: paper_bot_v0.157 / trace paper_bot_v0.157 / status age 7.3s / trace age 8.3s / OPEN 0 / CLOSED누적 375
+- 현재 paper 상태: OPEN 없음
+- 배차: 전체 454 → 내보냄 454 / micro fresh 316
+- 자원: 디스크 61.0% / 남음 5.58GB / 메모리 35.8% / load [1.71, 2.93, 3.91]
+
+- 후보판정 cache: 신선 / age 17.7s
+- 재확인 후보: 0 / cache 신선 / age 17.8s
+
+[worker 요약 · 캐시만]
+- ✅ scanner: scanner_worker_v0.4 / running / age 0.2s / err -
+- ✅ candle: candle_worker_v0.2 / running / age 2.8s / err -
+- ✅ market: market_regime_worker_v0.1 / running / age 0.3s / err -
+- ✅ feature: feature_worker_v0.3 / running / age 0.3s / err -
+- ✅ orderflow: orderflow_worker_v0.8 / running / age 1.6s / err -
+- ✅ risk: risk_worker_v0.2 / running / age 0.2s / err -
+- ✅ strategy: strategy_worker_v0.78 / running / age 17.8s / eval 454 / target 26 / err -
+- ✅ target_router: target_router_worker_v0.12 / running / age 0.2s / err -
+- ✅ review: review_worker_v0.11 / running / age 14.2s / err -
+
+[worker 정보품질 · v484]
+- scanner 품질: hot1m 454 / hot3m 454 / hot cache age 0.5s
+- feature 품질: 1m known 454 / 3m known 454 / 1m missing 0 / 3m missing 0 / hot 사용 454
+- target 품질: hot 요청 473 / hot active 388 / recheck 요청 53 / recheck micro 79
+- strategy 품질: canonical - / S1 0 / S2 2 / S3 54 / target 26
+
+[고정]
+- 메인봇은 장부 정리/압축/삭제를 하지 않습니다. 정리는 가드봇 /gcleanup 담당입니다.
+- 기본 명령은 CLOSED 전체장부 직접조회로 돌아가지 않습니다.
+- v484: worker 품질과 entry_decision spine을 같이 봅니다. 조건은 한곳에서 분류하고 출력/paper는 같은 결정을 읽습니다.
+- strategy phase: cycle_done / phase age 156.7s / v457 strategy cycle 완료 · S1 생애주기 추적 저장
+- S1 생애주기: age 17.5s / 현재 S1 0 / 최근S1 0 / paper대기 0 / paper전강등 0 / paper차단 0 / 만료S1제외 0
+
+[/pstatus 출력 요약]
+🧪 paper 상태 /pstatus · v427 cache-only
+- 상태: ON / paper paper_bot_v0.157 / trace paper_bot_v0.157 / status age 8.1s / trace age 9.1s / OPEN 0 / CLOSED누적 375
+- OPEN: S1 0 / S2 0 / S3 0 / 제외 0
+- 이번 cycle: OPEN 0 / CLOSED 0 / elapsed 5.753s
+- 후보선별: active latest 56개 / 고정 40개 제한 아님 / fresh 0 / S1선택 0 / micro대기 0
+
+[판독]
+- 이 화면은 paper status/open/handoff cache만 읽습니다.
+- 느리면 paper_bot 상태 저장 또는 Telegram 처리 흐름 문제입니다.
+
+[/candidate_reason 출력 요약]
+🧭 후보판정 이유 /candidate_reason · v468 cache-only
+- worker compact cache만 읽습니다. 현재 집계는 fresh paper-eligible 후보 기준입니다.
+- cache age 19.0s / 상태 신선 / 표시후보 0
+- 전체평가 454 / 후보파일 0 / 고정 40개 제한 아님
+- 현재 단계: S1 0 / S2 0 / S3 0
+- S1 막힘 상위: -
+- 부족정보 상위: -
+
+[상위 후보]
+- 표시 후보 없음: worker cache 준비중 또는 현재 후보 없음
+
+[상세]
+- 기본 명령은 compact cache만 읽습니다. cache가 오래되면 strategy worker 상태를 먼저 봅니다.
+
+[재확인]
+- /recheck: S2/S3 구조후보 0개 / cache 신선
+
+[/s1_lifecycle 출력 요약]
+🧬 S1 생애주기 /s1_lifecycle · v461
+- 조건 변경 없이 S1 발생/소멸/paper 읽힘만 추적합니다.
+- 기준: candidate_reason과 같은 fresh paper-eligible 후보만 현재 S1로 계산합니다.
+- cache age 19.3s / schema s1_lifecycle_trace_v471_with_closed_reference / worker strategy_worker_v0.78
+- 현재: S1 0 / S2 0 / S3 0 / fresh 0 / raw 56
+- 최근S1 0 / paper대기 0 / paper전강등 0 / paper최종차단 0 / 만료S1제외 0
+- 전환: -
+
+[현재 S1 TOP]
+- 없음
+
+[paper 대기 TOP]
+- 없음
+
+[paper 읽기 전 강등 TOP]
+- 없음
+
+[paper 최종차단 TOP]
+- 없음
+
+[만료되어 현재 S1에서 제외된 후보]
+- 없음
+
+[최근 후보 흐름 TOP 8]
+- 없음
+
+[/version_score 출력 요약]
+📊 버전별 성과 /version_score · v468 cache-only
+- 기준: score cache의 version_summary만 읽습니다. CLOSED 전체 장부 직접조회는 하지 않습니다.
+- 변경: 현재 실행판을 최근 적용판 요약에 우선 표시합니다.
+- 메인봇: 수익형 v2.13.422 / v468_v422_recheck_info_freshness_2026-05-27
+- paper: paper_bot_v0.157 / status age 9.8s / CLOSED누적 375
+- cache age 9.8s / schema paper_score_cache_v089 / version_summary 있음
+
+[최근 적용판 요약 · cache]
+- v2.13.422: 51전 18승 33패 / 승률 35.3% / 합산 -0.39% / 평균 -0.01%
+- v2.13.421: 0전 0승 0패 / 승률 0.0% / 합산 +0.00% / 평균 +0.00%
+- v2.13.420: 0전 0승 0패 / 승률 0.0% / 합산 +0.00% / 평균 +0.00%
+
+[다른 버전 bucket · cache]
+- v2.13.416: 6전 2승 4패 / 합산 +1.27%
+- v2.13.413: 1전 0승 1패 / 합산 -0.64%
+- v2.13.412: 1전 1승 0패 / 합산 +0.23%
+- v2.13.404: 1전 1승 0패 / 합산 +0.19%
+- v2.13.402: 2전 1승 1패 / 합산 +1.53%
+- cache keys: unknown, v2.13.369, v2.13.376, v2.13.377, v2.13.385, v2.13.320, v2.13.396, v2.13.398
+
+[최근 12시간 성적 · cache]
+- 전체: 21전 7승 14패 / 승률 33.3% / 합산 -0.20% / 평균 -0.01%
+- 청산사유: time_exit 6 / stop_loss 6 / fast_fail_stop 5 / take_profit 3 / protect_stop_after_tp 1
+
+[최근 12시간 · 버전별]
+- v2.13.422: 21전 7승 14패 / 승률 33.3% / 합산 -0.20% / 평균 -0.01%
+
+[최근 CLOSED 5건]
+- EDEN: -0.70% / 최고 +0.00% / stop_loss / 보유 1.27분 / 빠른실패 정리 후보 / v2.13.422
+  · 진입: 구조 지지전환확인 / 눌림후재가속 / 돈흐름재유입 / 수치 반응 +0.07% · 매수 0.90 · 지속 0.90 · 스프 0.04% / 위험 -
+- POLA: +2.52% / 최고 +2.52% / take_profit / 보유 0.53분 / 수익 보존 양호 / v2.13.422
+  · 진입: 구조 저항돌파 / 저항돌파후재테스트 / 지지전환확인 / 수치 반응 +2.11% · 매수 0.92 · 지속 0.92 · 스프 0.09% / 위험 고점권가격반응약함 / 채널상단과열
+- AVL: -0.76% / 최고 +0.00% / stop_loss / 보유 0.73분 / 빠른실패 정리 후보 / v2.13.422
+  · 진입: 구조 지지전환확인 / 얕은눌림 / 눌림후재가속 / 수치 반응 +0.32% · 매수 0.85 · 지속 0.85 · 스프 0.08% / 위험 -
+- NMR: -0.10% / 최고 +0.00% / time_exit / 보유 15.02분 / 관찰 / v2.13.422
+  · 진입: 구조 저항돌파 / 저항돌파후재테스트 / 지지전환확인 / 수치 반응 +0.40% · 매수 0.95 · 지속 0.95 · 스프 0.08% / 위험 -
+- XRP: -0.25% / 최고 +0.00% / fast_fail_stop / 보유 7.08분 / 빠른실패 정리 작동 / v2.13.422
+  · 진입: 구조 저항돌파 / 저항돌파후재테스트 / 지지전환확인 / 수치 반응 +0.05% · 매수 0.89 · 지속 0.89 · 스프 0.05% / 위험 -
+
+[최근 CLOSED 승리/손실 비교]
+- 승리군 3건: 반응 +0.78% / 매수 0.86 / 지속 0.86 / 스프 0.05%
+- 손실군 7건: 반응 +0.22% / 매수 0.89 / 지속 0.89 / 스프 0.06%
+- 판독: 단순 수치가 비슷하면 구조/상대기준/손실군 유사도를 같이 봅니다.
+
+[/popen 출력 요약]
+📂 paper OPEN /popen · 메인봇 캐시전용
+OPEN 없음
+
+[/errorlog 출력 요약]
+🧯 오류로그 /errorlog
+
+✅ 새 실행 중 오류 없음
+
+[v457 추가 요약]
+- S1 생애주기: age 22.0s / 현재 S1 0 / 최근S1 0 / paper대기 0 / paper전강등 0 / paper차단 0 / 만료S1제외 0
+- review 시간판정: 진짜놓침 0 / 늦게오름 1 / 위험상승 3
+- 다음 판단: S1 조건 변경 전 S1 생애주기와 늦게오름 분리를 먼저 봅니다.
+
+[v458 최근 paper 흐름]
+[최근 12시간 성적 · cache]
+- 전체: 21전 7승 14패 / 승률 33.3% / 합산 -0.20% / 평균 -0.01%
+- 청산사유: time_exit 6 / stop_loss 6 / fast_fail_stop 5 / take_profit 3 / protect_stop_after_tp 1
+
+[최근 12시간 · 버전별]
+- v2.13.422: 21전 7승 14패 / 승률 33.3% / 합산 -0.20% / 평균 -0.01%
+
+[최근 CLOSED 5건]
+- EDEN: -0.70% / 최고 +0.00% / stop_loss / 보유 1.27분 / 빠른실패 정리 후보 / v2.13.422
+  · 진입: 구조 지지전환확인 / 눌림후재가속 / 돈흐름재유입 / 수치 반응 +0.07% · 매수 0.90 · 지속 0.90 · 스프 0.04% / 위험 -
+- POLA: +2.52% / 최고 +2.52% / take_profit / 보유 0.53분 / 수익 보존 양호 / v2.13.422
+  · 진입: 구조 저항돌파 / 저항돌파후재테스트 / 지지전환확인 / 수치 반응 +2.11% · 매수 0.92 · 지속 0.92 · 스프 0.09% / 위험 고점권가격반응약함 / 채널상단과열
+- AVL: -0.76% / 최고 +0.00% / stop_loss / 보유 0.73분 / 빠른실패 정리 후보 / v2.13.422
+  · 진입: 구조 지지전환확인 / 얕은눌림 / 눌림후재가속 / 수치 반응 +0.32% · 매수 0.85 · 지속 0.85 · 스프 0.08% / 위험 -
+- NMR: -0.10% / 최고 +0.00% / time_exit / 보유 15.02분 / 관찰 / v2.13.422
+  · 진입: 구조 저항돌파 / 저항돌파후재테스트 / 지지전환확인 / 수치 반응 +0.40% · 매수 0.95 · 지속 0.95 · 스프 0.08% / 위험 -
+- XRP: -0.25% / 최고 +0.00% / fast_fail_stop / 보유 7.08분 / 빠른실패 정리 작동 / v2.13.422
+  · 진입: 구조 저항돌파 / 저항돌파후재테스트 / 지지전환확인 / 수치 반응 +0.05% · 매수 0.89 · 지속 0.89 · 스프 0.05% / 위험 -
+- 다음 판단: 현재 OPEN만 보지 말고 최근 CLOSED/12시간 성적과 함께 봅니다.
+
+[v461 S1 추적 단일화]
+- S1 생애주기: age 22.0s / 현재 S1 0 / 최근S1 0 / paper대기 0 / paper전강등 0 / paper차단 0 / 만료S1제외 0
+- 기준: candidate_reason과 /s1_lifecycle 모두 fresh paper-eligible 후보를 현재 S1로 계산합니다.
+- 다음 판단: S1 표시와 paper 처리결과가 어긋나면 /s1_lifecycle의 paper대기/차단/만료S1제외를 먼저 봅니다.
+
+[최근 CLOSED 승리/손실 비교]
+- 승리군 3건: 반응 +0.78% / 매수 0.86 / 지속 0.86 / 스프 0.05%
+- 손실군 7건: 반응 +0.22% / 매수 0.89 / 지속 0.89 / 스프 0.06%
+- 판독: 단순 수치가 비슷하면 구조/상대기준/손실군 유사도를 같이 봅니다.
+
+[v468 재확인 S1승격/정보부족]
+- 후보 0 / S1승격 0 / 승격대기 0 / 부분확인 0 / 재확인중 0 / 위험우선 0 / cache 신선
+[S1승격 차단 TOP]
+- 아직 집계 없음
+[정보부족 TOP]
+- 정보부족 집계 없음
+[실측부족 TOP]
+- 실측부족 집계 없음
+- 다음 판단: S1승격은 paper 검증용 후보이며, 자동매수/BUY_READY가 아닙니다. 승격차단 사유를 같이 봅니다.
