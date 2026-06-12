@@ -1,0 +1,693 @@
+코인봇 묶음 요약집 v847
+- 생성: 2026-06-12 17:20:49 KST
+- 메인봇: 수익형 v2.13.847 / v847_live_ledger_normalized_dedup_2026-06-12
+- 접수지연: 0.61s / 처리합계: 27.15s
+
+[명령 처리시간]
+- ✅ /health: 0.01s / OK
+- ✅ /cleanup_status: 14.93s / OK
+- ✅ /batch: 0.51s / OK
+- ✅ /issue_ledger: 7.83s / OK
+- ✅ /paper_gate_audit: 0.16s / OK
+- ✅ /errorlog: 0.00s / OK
+
+[채팅 운영판]
+📊 코인봇 운영판 /batch · v847
+① 적용/성과
+- 🧠 main: 수익형 v2.13.847
+- 🧪 paper: paper_bot_v0.803 / OPEN 0
+- 🏷️ build: v847_live_ledger_normalized_dedup_2026-06-12
+❌ 최근 24시간: 1전 0승 1패 / 합산 -0.18% / 평균 -0.18%
+❔ 최근 3시간: 0전
+❔ 최근 6시간: 0전
+
+② 실시간 장부
+- live ledger: ✅ age 0.0s / active 12개 / DONE archive 24개 / stale True / schema issue_ledger_live_v847
+- current_work: TRIGGER-001 / resume_to: TRIGGER-001 after disk/source board is trustworthy
+- active 장부: OPEN/CHECK만 표시 · DONE은 archive로 이동
+- dedup: DONE archive는 issue_id+resolved_version 기준 중복 차단
+- Telegram: normalized live ledger 표시층
+
+③ 다음 수술 큐
+- 현재 작업: TRIGGER-001 · 장부/표시 source 신뢰 회복 · 계산선 검산으로 이동
+- 복귀 작업: TRIGGER-001 after disk/source board is trustworthy
+- 순서: DISK-004/DISK-005 → SOURCE-001 → TRIGGER-001 → QUALITY-001/LATE-001
+- 금지: 조건/S1·S2·S3 기준/trigger 산식/청산/paper OPEN/guard 변경 금지
+
+④ source/정리 신뢰도
+- 판독: ✅ 자료 오래됨 판정 거의 없음
+- 자료 오래됨 표시: 이유횟수 0 / 후보행 0
+- 분류: 실제 오래됨 0 / 멀쩡한데 오래됨 의심 0 / 나이값 없음 0
+- 실제 자료 나이: 후보파일 26.3s / worker 전략 6.0s / 체결/호가 0.0s / 가격특징 1.3s / 캔들 2.7s / 재확인배차 1.5s / 복기 10.9s
+- paper_latest: 19.61MB / owner_done True / source paper_latest_actual_cleanup_v846
+
+⑤ 지금 병목
+- 실전후보: S1 0 / S2 211 / S3 17 / 합계 228
+- 판독: 🟡 S1 없음: 구조계획·trigger·실행위험 재확인 필요
+- 구조자료: HTF candle 450/456 · MTF candle 450/456
+- 병목: HTF 확인 88/관찰 139 · MTF 확인 150/관찰 77/자료없음 1 · LTF ready 2/wait 19/not_ready 207
+- 구조타입 TOP: VWAP·EMA 방어 212 / 돌파 유지 9 / 저점쓸림 후 회복 7
+- 후보역할 TOP: 구조 재확인 97 / MTF+품질 재확인 76 / 구조 약함 재확인 31 / 위험 관찰 17
+- S1 막힘 TOP: v826 MTF 구조 재확인 상위 76 / trigger/gap 대기 0.302% 4 / trigger/gap 대기 0.329% 2 / trigger/gap 대기 0.306% 2 / trigger/gap 대기 0.305% 2
+
+⑥ TRIGGER-001 세부분류
+- 대상: 방아쇠 미도달 239 / 막은뒤상승 196
+- 세부분류: 중복 trace 126 / paper 전달/급등통과 의심 39 / 후속없음 만료 22 / 계산선 과상향 의심 22 / 진짜 놓침 15 / 잘 막음 12 / 검증대기 2 / 거래불가 상승 1
+- 판독: 계산선 과상향 의심 22건 → 구조선/trigger 산식 검산 우선
+- 계산선 과상향 의심 샘플: ATOM max +1.30% now -0.80% / gap -0.300% / 계산선 재확인·계산선 재확인 / 체결 0.02/지속 0.02 / 스프 0.20/미끄 0.20 / LPT max +1.42% now +0.30% / gap -0.297% / 계산선 재확인·계산선 재확인 / 체결 0.47/지속 0.47 / 스프 0.19/미끄 0.19 / PEAQ max +1.16% now -0.39% / gap -0.298% / 계산선 재확인·돌파 유지 / 체결 0.39/지속 0.39 / 스프 0.21/미끄 0.21
+- paper 전달/급등통과 의심 샘플: SUI max +0.71% now +0.71% / gap +0.000% / 확정선·VWAP·EMA 방어 / 체결 1.00/지속 1.00 / 스프 0.18/미끄 0.18 / XRP max +0.70% now +0.70% / gap +0.000% / 확정선·VWAP·EMA 방어 / 체결 0.92/지속 0.80 / 스프 0.06/미끄 0.06 / PENGU max +0.98% now -0.98% / gap +0.000% / 확정선·VWAP·EMA 방어 / 체결 0.77/지속 0.77 / 스프 0.10/미끄 0.10
+- 진짜 놓침 샘플: TOSHI max +5.22% now +0.80% / gap +0.298% / 자료없음·자료없음 / 체결 - / 실행비용 - / TEMCO max +2.41% now +0.59% / gap +0.300% / 자료없음·자료없음 / 체결 - / 실행비용 - / TEMCO max +3.49% now +1.65% / gap +0.300% / 자료없음·자료없음 / 체결 - / 실행비용 -
+
+⑦ 문제장부
+🧾 미해결/해결 장부
+- ZIP_LEDGER-001 ❌ 배포 zip 내부 장부 seed 포함: coinbot_update zip 안에 ledger seed/queue/manifest/verify/policy 포함
+- TRIGGER-001 ❌ 방아쇠 미도달 세부분류: 미도달 239 / 과상향 22 / 진짜 15 / paper 전달 39
+- DISK-001 ❌ 디스크 큰 파일 순환정리: 남음 4.57GB / 목표 5.0GB / 회수 28.06MB / 실패 0
+- DISK-002 ❌ 구형 cache/state 격리·재생성 정리: 격리/reset 0개 / 절감 0.0MB
+- DISK-003 ❌ 디스크 급증 방지 상한선: paper latest/log/trace/cache 상한 적용 · free 4.57GB
+- LATE-001 ❌ 늦은 진입 분리: OXT first→open 210초 늦은 진입 의심 / paper 전달·trigger대기·후속무반응 분리 필요
+- LEDGER-001 ❌ 전체 장부/복기/샘플 순환정리: OPEN 유지 0 / CHECK 유지 0 / DONE 보관 0 / 샘플축약 0 / 회수 178.04MB
+- QUALITY-001 ❌ 체결착시/가격무반응 분리: 체결은 강한데 가격이 안 따라옴 37 / OXT 체결0.84·지속0.83·최고+0.00·-0.18 종료
+- ERROR-001 🟡 v836/v837 출력함수 NameError + 메뉴등록 오류 추적: v839 구형 cache/state 정리 적용 · 새 오류 없음
+- OUTPUT-001 🟡 구버전 출력함수 호출 잔존 제거: v838에서 미정의 호출 제거 완료 · v839에서는 cache/state 정리만 추가
+- RETENTION-001 🟡 2~3일 보관정책: 일반 파일 2~3일, trace/cache 2일, 요약txt 6시간, archive 2일
+- CANDLE-001 🟡 candle 구조자료 본선 연결: 정상권·소수 fallback 관찰 · HTF 447/456 · MTF 447/456
+
+⑧ 다음
+- 장부 spine이 정상화되면 다음은 TRIGGER-001 계산선/확정선/paper 전달 검산.
+- 아직 조건/산식 완화 금지. 먼저 분류값 봉인.
+
+
+[실시간 장부]
+- live ledger: ✅ age 0.0s / active 12개 / DONE archive 24개 / stale True / schema issue_ledger_live_v847
+- current_work: TRIGGER-001 / resume_to: TRIGGER-001 after disk/source board is trustworthy
+- active 장부: OPEN/CHECK만 표시 · DONE은 archive로 이동
+- dedup: DONE archive는 issue_id+resolved_version 기준 중복 차단
+- Telegram: normalized live ledger 표시층
+- live path: /home/dangdang971216/trading_bot/ledger/issue_ledger_live.json
+- done archive: /home/dangdang971216/trading_bot/ledger/done_archive.jsonl
+- events path: /home/dangdang971216/trading_bot/ledger/issue_ledger_events.jsonl
+- queue path: /home/dangdang971216/trading_bot/ledger/next_work_queue_live.json
+- old preserve: runtime-owned DISK/SOURCE/meta 구 OPEN 재보존 금지
+
+[다음 수술 큐]
+- 현재 작업: TRIGGER-001 · 장부/표시 source 신뢰 회복 · 계산선 검산으로 이동
+- 복귀 작업: TRIGGER-001 after disk/source board is trustworthy
+- 순서: DISK-004/DISK-005 → SOURCE-001 → TRIGGER-001 → QUALITY-001/LATE-001
+- 금지: 조건/S1·S2·S3 기준/trigger 산식/청산/paper OPEN/guard 변경 금지
+- 닫는 기준: paper_latest/SOURCE 구값 재등록 0 · issue_ledger 1초대 · TRIGGER-001로 복귀
+
+[문제장부 OPEN/CHECK compact]
+🧾 미해결/해결 장부
+- ZIP_LEDGER-001 ❌ 배포 zip 내부 장부 seed 포함: coinbot_update zip 안에 ledger seed/queue/manifest/verify/policy 포함
+- TRIGGER-001 ❌ 방아쇠 미도달 세부분류: 미도달 239 / 과상향 22 / 진짜 15 / paper 전달 39
+- DISK-001 ❌ 디스크 큰 파일 순환정리: 남음 4.57GB / 목표 5.0GB / 회수 28.06MB / 실패 0
+- DISK-002 ❌ 구형 cache/state 격리·재생성 정리: 격리/reset 0개 / 절감 0.0MB
+- DISK-003 ❌ 디스크 급증 방지 상한선: paper latest/log/trace/cache 상한 적용 · free 4.57GB
+- LATE-001 ❌ 늦은 진입 분리: OXT first→open 210초 늦은 진입 의심 / paper 전달·trigger대기·후속무반응 분리 필요
+- LEDGER-001 ❌ 전체 장부/복기/샘플 순환정리: OPEN 유지 0 / CHECK 유지 0 / DONE 보관 0 / 샘플축약 0 / 회수 178.04MB
+- QUALITY-001 ❌ 체결착시/가격무반응 분리: 체결은 강한데 가격이 안 따라옴 37 / OXT 체결0.84·지속0.83·최고+0.00·-0.18 종료
+- ERROR-001 🟡 v836/v837 출력함수 NameError + 메뉴등록 오류 추적: v839 구형 cache/state 정리 적용 · 새 오류 없음
+- OUTPUT-001 🟡 구버전 출력함수 호출 잔존 제거: v838에서 미정의 호출 제거 완료 · v839에서는 cache/state 정리만 추가
+- RETENTION-001 🟡 2~3일 보관정책: 일반 파일 2~3일, trace/cache 2일, 요약txt 6시간, archive 2일
+- CANDLE-001 🟡 candle 구조자료 본선 연결: 정상권·소수 fallback 관찰 · HTF 447/456 · MTF 447/456
+
+[SOURCE-001 source 상세]
+- 판독: ✅ stale 표시 단일화: worker/candidate age 정상, 구 stale 라벨은 무시
+- 자료 오래됨 표시: 이유횟수 0 / 후보행 0
+- 분류: 실제 오래됨 0 / 멀쩡한데 오래됨 의심 0 / 나이값 없음 0
+- 실제 자료 나이: 후보파일 31.4s / worker 전략 6.3s / 체결/호가 0.4s / 가격특징 1.7s / 캔들 3.1s / 재확인배차 1.9s / 복기 11.3s
+
+[TRIGGER-001 세부분류 상세]
+- 대상: 방아쇠 미도달 239 / 막은뒤상승 196
+- 세부분류: 중복 trace 126 / paper 전달/급등통과 의심 39 / 후속없음 만료 22 / 계산선 과상향 의심 22 / 진짜 놓침 15 / 잘 막음 12 / 검증대기 2 / 거래불가 상승 1
+- 판독: 계산선 과상향 의심 22건 → 구조선/trigger 산식 검산 우선
+- 계산선 과상향 의심 샘플: ATOM max +1.30% now -0.80% / gap -0.300% / 계산선 재확인·계산선 재확인 / 체결 0.02/지속 0.02 / 스프 0.20/미끄 0.20 / LPT max +1.42% now +0.30% / gap -0.297% / 계산선 재확인·계산선 재확인 / 체결 0.47/지속 0.47 / 스프 0.19/미끄 0.19 / PEAQ max +1.16% now -0.39% / gap -0.298% / 계산선 재확인·돌파 유지 / 체결 0.39/지속 0.39 / 스프 0.21/미끄 0.21
+- paper 전달/급등통과 의심 샘플: SUI max +0.71% now +0.71% / gap +0.000% / 확정선·VWAP·EMA 방어 / 체결 1.00/지속 1.00 / 스프 0.18/미끄 0.18 / XRP max +0.70% now +0.70% / gap +0.000% / 확정선·VWAP·EMA 방어 / 체결 0.92/지속 0.80 / 스프 0.06/미끄 0.06 / PENGU max +0.98% now -0.98% / gap +0.000% / 확정선·VWAP·EMA 방어 / 체결 0.77/지속 0.77 / 스프 0.10/미끄 0.10
+- 진짜 놓침 샘플: TOSHI max +5.22% now +0.80% / gap +0.298% / 자료없음·자료없음 / 체결 - / 실행비용 - / TEMCO max +2.41% now +0.59% / gap +0.300% / 자료없음·자료없음 / 체결 - / 실행비용 - / TEMCO max +3.49% now +1.65% / gap +0.300% / 자료없음·자료없음 / 체결 - / 실행비용 -
+- 거래불가 상승 샘플: AMO max +1.23% now +0.44% / gap -0.299% / 계산선 재확인·돌파 유지 / 체결 0.12/지속 0.12 / 스프 1.15/미끄 1.15
+- 중복 trace 샘플: SUI max +0.71% now +0.71% / gap +0.000% / 확정선·VWAP·EMA 방어 / 체결 1.00/지속 1.00 / 스프 0.18/미끄 0.18 / BEAM max +0.47% now +0.47% / gap -0.278% / 계산선 재확인·공통 구조형 / 체결 0.81/지속 0.81 / 스프 0.32/미끄 0.32 / XPR max +0.00% now -0.36% / gap -0.300% / 계산선 재확인·계산선 재확인 / 체결 0.18/지속 0.18 / 스프 0.27/미끄 0.27
+- 잘 막음 샘플: ONT max +0.20% now +0.20% / gap +0.000% / 확정선·VWAP·EMA 방어 / 체결 0.77/지속 0.77 / 스프 0.08/미끄 0.08 / CAMP max +0.15% now +0.15% / gap +0.000% / 확정선·지지 반등형 / 체결 0.29/지속 0.29 / 스프 0.37/미끄 0.37 / BLEND max +0.44% now +0.44% / gap +0.300% / 자료없음·자료없음 / 체결 - / 실행비용 -
+- 닫는 기준: 중복·거래불가·진짜놓침·계산선오류·확정선미도달·paper 전달지연 분류 완료
+
+[명령별 짧은 요약]
+1/6 ✅ /health · 0.01s
+- - worker: ✅ 9 / ⚠️ 0 / ❌ 0 · TOP strategy 10.6s / target_router 5.8s / candle 5.2s
+- - 후보 snapshot: S1 0 / S2 211 / S3 17 / 실전후보 228 / coverage 228 / raw S3 185 / age 4.1s
+- - 자원: CPU: 46.1% / load [9.21, 9.41, 9.34] / 코어당 1.15 / 디스크: 68.0% 사용 / 남음 4.57GB / 메모리: 19.5% 사용 / 여유 25845.2MB
+- ✅ 재확인 배관: strategy status 10.6s/rows 456 · publish 4.1s · compact 4.1s · latest파일 24.8s · structure 4.8s · queue 5.8s · target_router 5.8s · paper 전달 14.1s
+2/6 ✅ /cleanup_status · 14.93s
+- 🧹 live ledger normalized 정리 /cleanup_status · v847
+- - 판독: ❌ 정리 필요 · 회수 부족
+3/6 ✅ /batch · 0.51s
+- ① 적용/성과
+- - 🧠 main: 수익형 v2.13.847
+4/6 ✅ /issue_ledger · 7.83s
+- 🧾 실시간 문제장부 /issue_ledger · v847
+- - live ledger: ✅ age 0.0s / active 12개 / DONE archive 24개 / stale True / schema issue_ledger_live_v847
+5/6 ✅ /paper_gate_audit · 0.16s
+- 🧪 PAPER-RUNTIME/PAPER-001 trigger spine /paper_gate_audit · v847
+- - live ledger: ✅ age 0.0s / active 12개 / DONE archive 24개 / stale True / schema issue_ledger_live_v847
+6/6 ✅ /errorlog · 0.00s
+- 🧯 오류로그 /errorlog
+- ✅ 새 실행 중 오류 없음
+
+[전체 상세 요약]
+📦 코인봇 전체 요약 /batch
+
+① 성과
+❔ 오늘: 0전
+❔ 어제: 0전
+❌ 최근 24시간: 1전 0승 1패 / 합산 -0.18% / 평균 -0.18%
+❔ 최근 3시간: 0전
+❔ 최근 6시간: 0전
+- score/review 오늘: 0 / 0
+
+② 후보 현황
+- 실전후보: 🟢S1 0 / 🟡S2 211 / 🔵S3 17 / 합계 228
+- 전체시장 참고: 185개 / 후보 전 단계·감시만 한 코인 228개
+- 1분 반응: 1분가격 정상 456 / 1분반응 0/음수 391 / 1분반응 부족 42 / 1분반응 통과 23
+- 판독: 현재 S1 없음. S2 재확인/구조계획/실행위험을 봐야 함.
+- 시장→후보 배관: KRW 456 → 스캔 456 → 전략판단 456 → 봉인 456 → 실전후보 228
+- 참고/감시만 한 코인: 228개 · 전체시장 S3 흔적 185개
+
+③ S1 못 간 이유
+- VWAP/EMA 방어 후속 확인 대기 210 / v826 MTF 구조 재확인 상위 194 / v820 S1승격 보류 124 / 구조부정: 체결은 강한데 가격이 안 따라옴 체결착시 현재 cycle 78 / 구조계획 좋음 아님 74 / 생존위험: 강한 매도압력/하드위험 16
+- 위험/주의: 구조선 근거 재확인 435 / 실행비용높음 330 / coverage 관찰 174 / VWAP/EMA하단구조 163 / S3 관찰/복기 전용 160
+
+④ 구조계획
+- 계획상태: 위험 커서 보류 153 / 구조계획 좋음 47 / 구조계획 준비됨 26 / 손익비 대기 2
+- 후보역할: 위험 보류 153 / S1 심사 후보 47 / 빠른 재확인 후보 26 / S2/관찰 2
+- 선 품질: 계산선 재확인 196 / 확정선 32
+- 구조별 방아쇠: 계산선 재확인형 101 / VWAP·EMA 방어형 75 / 돌파 유지형 39 / 공통 구조형 9 / 지지선 반등형 4
+- 진입 경로: 구조형 228
+- 방아쇠 재배치: 없음
+- 공통초입 패턴: 통과 없음 / 관찰 common_scalp|money_expand|above_vwap_ema 2 / common_scalp|above_vwap_ema 1
+- 평균 손익비(RR): 1.98 / 구조계획 기준 S1승격 0개 / 공통초입 관찰 3개 / 통과 0개 / 승격 0개
+- 미충족 이유: 없음
+- 샘플: BCH(S2/구조형/구조계획 좋음/VWAP·EMA 방어형/sustain_mid|money_expand|above_v/RR 2.075/gap 0%/확정선) / WLD(S2/구조형/위험 커서 보류/VWAP·EMA 방어형/react_mid|buy_very_strong|sustai/RR 1.991/gap 0%/확정선) / EDEN(S2/구조형/위험 커서 보류/VWAP·EMA 방어형/buy_very_strong|sustain_strong|m/RR 0.57/gap 0%/확정선) / MVC(S2/구조형/구조계획 좋음/VWAP·EMA 방어형/sustain_mid|money_expand|above_v/RR 1.769/gap 0%/계산선 재확인)
+
+⑤ S1 hold → paper 소비
+- S1 hold: 전체 0 / fresh 0 / stale 0 / trigger대기 0 / 진입준비 0 / 만료정리 0
+- hold 상태: 없음
+- hold 샘플: -
+- paper 소비 흐름: 현재 cycle hold 읽음 1 / paper 최종보류 1 / 최근60초 hold 읽음 1 / paper 최종보류 1 / 최근5분 hold 읽음 1 / paper 최종보류 1
+- paper 최종보류 이유(5분): 방아쇠 가격 미도달: 진입 1,717 < 방아쇠 1,720 1
+- 최근60초 샘플: XRP:hold 읽음:26.1s / XRP:paper 최종보류:26.1s
+
+⑥ 이전 요약 이후 매매
+- 상세 매매 복기표는 이 요약 txt 하단 [이전 요약 이후 매매 상세]에 1회만 표시
+
+⑦ 통합 검증판
+[산 후보 검증]
+- 구간 CLOSED 0개 / 검증: 새 CLOSED 없음
+[안 산 후보 검증]
+- 추적 456 / 판정완료 394 / 상승후보 157 / 검증분류 15
+- 검증분류: 위험필터 확인대상 9 / 확인값 늦음 2 / 못 사는 상승 2 / 방아쇠 실패 1 / 배차/coverage 실패 1
+- 원인원본: coverage_buried 134 / strategy_rejected_or_observed 19 / feature_late 2 / orderflow_late 1 / trigger_wait_missed 1
+- 배차/coverage 실패 샘플: NIL S2 max +5.62% / gap -0.31% / 체결 0.50, 지속 0.50, 스프 0.22, 미끄 0.22
+- 못 사는 상승 샘플: NFT S2 max +25.00% / gap +0.00% / 체결 0.02, 지속 0.02, 스프 22.22, 미끄 22.22 / HIGH S2 max +16.26% / gap -0.32% / 체결 0.51, 지속 0.51, 스프 1.64, 미끄 1.64
+- 방아쇠 실패 샘플: PLUME S2 max +1.62% / gap -0.32% / 체결 0.63, 지속 0.61, 스프 0.20, 미끄 0.20
+- 확인값 늦음 샘플: XTER S2 max +0.91% / gap -0.30% / 체결 0.83, 지속 0.83, 스프 0.15, 미끄 0.15 / PROS S2 max +5.08% / gap -0.30% / 체결 0.17, 지속 0.17, 스프 0.12, 미끄 0.12
+- 위험필터 확인대상 샘플: PARTI S2 max +2.62% / gap -0.30% / 체결 0.74, 지속 0.74, 스프 0.14, 미끄 0.14 / WAVES S3 max +26.29% / gap -0.31% / 체결 0.15, 지속 0.15, 스프 0.52, 미끄 0.52 / TOKAMAK S3 max +8.11% / gap -0.30% / 체결 0.73, 지속 0.73, 스프 0.54, 미끄 0.54
+[가격반응 지연·체결착시 품질판]
+- 현재 후보 품질: 품질보류 130 / 체결선행 가격대기 46 / 체결선행 관찰 19 / 실행비용 부담 17 / 거래불가 상승/품질제외 10 / 체결착시 위험 5 / 가격체결 동시강함 1
+- 놓친 상승 품질: 상승했지만 품질불명 5 / 상승부족/보류 5 / 가격후행 성공 3 / 거래불가 상승/품질제외 2
+- 산 후보 후속검증: 새 CLOSED 후속검증 없음
+- 가격후행 성공: PARTI S2 max +2.62% / 반응 +0.00 체결 0.74 지속 0.74 스프 0.14 미끄 0.14 / XTER S2 max +0.91% / 반응 +0.00 체결 0.83 지속 0.83 스프 0.15 미끄 0.15 / ORCA S2 max +5.65% / 반응 -0.07 체결 0.72 지속 0.64 스프 0.33 미끄 0.33
+- 거래불가 상승/품질제외: NFT S2 max +25.00% / 반응 +0.00 체결 0.02 지속 0.02 스프 22.22 미끄 22.22 / HIGH S2 max +16.26% / 반응 +0.00 체결 0.51 지속 0.51 스프 1.64 미끄 1.64
+- 체결선행 가격대기: XRP(S2 반응 +0.06 체결 0.92 지속 0.80 스프 0.06) / SOL(S2 반응 +0.10 체결 0.92 지속 0.93 스프 0.10) / QTUM(S2 반응 +0.09 체결 0.98 지속 0.98 스프 0.19)
+- 체결착시 위험: EDEN(S2 반응 -0.14 체결 0.99 지속 0.99 스프 0.12) / NEAR(S2 반응 -0.13 체결 0.76 지속 0.78 스프 0.22) / ALLO(S2 반응 -0.34 체결 0.79 지속 0.79 스프 0.34)
+- 판독: 가격반응을 무조건 기다릴지, 체결선행을 일부 살릴지, 체결착시를 막을지 보는 품질판
+[공통초입 검증]
+- 관찰 228 / 통과 0 / 승격 0
+- 막힌 체크: 가격반응 부족 217 / 체결 부족 174 / 1분지속 부족 174 / 실행비용 부담 171 / VWAP/EMA 위치 불량 60
+- 패턴 TOP: common_scalp|above_vwap_ema 65 / common_scalp|common_watch 31 / common_scalp|money_expand|above_vwap_ema 26 / common_scalp|buy_very_strong|sustain_strong|above_vwap_ema 24 / common_scalp|buy_very_strong|sustain_strong|money_expand|above_vwap_ema 10
+- 샘플: BCH(S2/구조형/sustain_mid|money_expand|a / 반응 +0.03 체결 0.67 지속 0.65 스프 0.07) / WLD(S2/구조형/react_mid|buy_very_strong| / 반응 +0.27 체결 0.86 지속 0.80 스프 0.14) / EDEN(S2/구조형/buy_very_strong|sustain_st / 반응 -0.14 체결 0.99 지속 0.99 스프 0.12) / MVC(S2/구조형/sustain_mid|money_expand|a / 반응 -0.05 체결 0.67 지속 0.68 스프 0.05)
+[구조별 검증]
+- 구조타입: 계산선 재확인형 101 / VWAP·EMA 방어형 75 / 돌파 유지형 39 / 공통 구조형 9 / 지지선 반등형 4
+- 계획상태: 위험 커서 보류 153 / 구조계획 좋음 47 / 구조계획 준비됨 26 / 손익비 대기 2
+- 구조주의: 계산선 재확인 196
+- 샘플: BCH(S2/VWAP·EMA 방어형/구조계획 좋음/RR 2.075/gap 0%) / WLD(S2/VWAP·EMA 방어형/위험 커서 보류/RR 1.991/gap 0%) / EDEN(S2/VWAP·EMA 방어형/위험 커서 보류/RR 0.57/gap 0%) / MVC(S2/VWAP·EMA 방어형/구조계획 좋음/RR 1.769/gap 0%)
+[재확인 freshness]
+- S2 대상 211 / 상태: 최신 업데이트 123 / 최신이지만 값 변화 없음 88
+- 자료 나이: 자료 20초 이내 211
+- 보관자료 나이: strategy 6.4s / candidate 5.6s / router 2.8s / paper 전달 14.6s
+- 샘플: BCH S2 / 최신 업데이트 / 확인 7회 / 변화 4 / age 3.5s / gap 0% / 체결 0.67, 지속 0.65 / WLD S2 / 최신 업데이트 / 확인 2회 / 변화 5 / age 3.5s / gap 0% / 체결 0.86, 지속 0.80 / EDEN S2 / 최신이지만 값 변화 없음 / 확인 4회 / 변화 0 / age 3.5s / gap 0% / 체결 0.99, 지속 0.99 / MVC S2 / 최신 업데이트 / 확인 4회 / 변화 5 / age 3.5s / gap 0% / 체결 0.67, 지속 0.68
+- 판독기준: 여러 번 확인했는지(seen), 값이 변했는지, 자료 나이가 60초를 넘는지 확인
+- 다음 판단: 가격후행 성공은 살릴 후보, 체결착시/후속실패는 차단 후보, 거래불가 상승은 버릴 후보
+
+⑧ 아까운 후보 / 놓친 후보
+- source: review_worker missed cache / age 13.5s
+- 추적 456 / 판정완료 394 / 상승후보 157 / 진짜 아까움 3
+- 놓친 이유 TOP: 후보 전 단계에 묻힘 134 / strategy_rejected_or_observed 19 / feature 반응 늦음 2 / 체결/orderflow 늦음 1 / 방아쇠 대기 후 상승 1
+[진짜 아까운 후보 TOP]
+- PARTI S2 / 이후최고 +2.62% / 현재 +2.10% / strategy_rejected_or_observed / 이유 자료 오래됨 의심
+- PLUME S2 / 이후최고 +1.62% / 현재 +1.30% / 방아쇠 대기 후 상승 / 이유 v826 MTF 구조 재확인 상위 / v820 S1승격 보류 / 실행비용 …
+- XTER S2 / 이후최고 +0.91% / 현재 +0.91% / 체결/orderflow 늦음 / 이유 구조부정: 체결은 강한데 가격이 안 따라옴 체결착시 현재 cycle
+[아까운 상승 후보 TOP]
+- WAVES S3 / 이후최고 +26.29% / 현재 +26.29% / strategy_rejected_or_observed / 이유 생존위험: spread 0.52% / 생존위험: slippage 0.52%
+- NFT S2 / 이후최고 +25.00% / 현재 +25.00% / 후보 전 단계에 묻힘 / 이유 생존위험: spread 22.22% / 생존위험: slippage 22.2…
+- HIGH S2 / 이후최고 +16.26% / 현재 +16.26% / 후보 전 단계에 묻힘 / 이유 생존위험: spread 1.64% / 생존위험: slippage 1.64%
+- TOKAMAK S3 / 이후최고 +8.11% / 현재 +3.60% / strategy_rejected_or_observed / 이유 생존위험: spread 0.54% / 생존위험: slippage 0.54%
+- XPL S3 / 이후최고 +7.81% / 현재 +7.81% / strategy_rejected_or_observed / 이유 자료 오래됨 의심 / 생존위험: spread 0.78% /…
+- 다음 판정 포인트: 방아쇠 1 / coverage 134 / orderflow 1
+- 판독: 이 표는 조건완화가 아니라 “안 샀는데 오른 이유”를 보는 복기표
+
+⑨ 자원/정리
+✅ CPU: 46.1% / load [9.21, 9.41, 9.34] / 코어당 1.15
+✅ 디스크: 68.0% 사용 / 남음 4.57GB
+✅ 메모리: 19.5% 사용 / 여유 25847.0MB
+- 손절초과: 최근 trace 0건 / loop gap 의심 0건
+- 요약 txt는 전송 후 서버 임시파일 삭제
+
+더 보기: /candidate_reason /gate_check /paper_paper 전달 /pstatus /errorlog /missed_candidates /validation_board /quality_board
+
+
+[MTF 구조판 상세]
+- 구조판 실전후보: S2 204 / S3 23 / 합계 227
+- 구조판 전체전략: S2 264 / S3 192 / 합계 456
+- 상위구조(15m/30m/1h): htf_watch 139 / htf_confirmed 87 / htf_missing 1
+- 중간setup(3m/5m/15m): mtf_setup_confirmed 145 / mtf_setup_watch 81 / mtf_setup_missing 1
+- 진입trigger(1m/orderflow): ltf_not_ready 203 / ltf_trigger_wait 23 / ltf_trigger_ready 1
+- 구조자료 source: HTF 캔들공장 구조자료 451 / 예전 숫자보정 자료 5 / MTF 캔들공장 구조자료 451 / 예전 숫자보정 자료 5
+- 구조타입(실전후보) TOP: VWAP·EMA 방어 212 / 돌파 유지 8 / 저점쓸림 후 회복 6 / 공통 관찰 1
+- 구조역할(실전후보) TOP: 구조 재확인 93 / 중간흐름+품질 재확인 77 / 구조 약함 재확인 26 / 위험 관찰 23 / 위험 재확인 8
+- S1 보류 TOP: v826 MTF 구조 재확인 상위 77 / trigger/gap 대기 0.302% 4 / trigger/gap 대기 0.306% 3 / trigger/gap 대기 0.303% 3 / trigger/gap 대기 0.329% 2
+- 구조 샘플: AZTEC S2/VWAP·EMA 방어/위험 재확인 · HTF htf_watch / MTF mtf_setup_watch / LTF ltf_not_ready · 생존위험: 방아쇠 과다이탈 0.464% / SENT S2/VWAP·EMA 방어/구조 재확인 · HTF htf_watch / MTF mtf_setup_watch / LTF ltf_not_ready · v820 S1승격 보류 / 구조계획 좋음 아님 / trigger/gap 대기 0.370% / PENGU S2/VWAP·EMA 방어/구조 재확인 · HTF htf_watch / MTF mtf_setup_confirmed / LTF ltf_not_ready · VWAP/EMA 방어선 체결/지속 근거 / 가격후행 가능 방어흐름
+- S1 gate: 15m/30m/1h 상위구조 + 3m/5m setup + 1m trigger 모두 확인. 1m 단독 S1 금지
+[이전 요약 이후 매매 상세]
+- 구간: 2026-06-12 14:32:53 KST → 2026-06-12 17:20:49 KST
+- 이벤트: 0개 / paper 매매상세 cache
+- 새 OPEN/CLOSED 없음
+
+[통합 검증판 상세]
+[산 후보 검증]
+- 구간 CLOSED 0개 / 검증: 새 CLOSED 없음
+[안 산 후보 검증]
+- 추적 456 / 판정완료 394 / 상승후보 157 / 검증분류 15
+- 검증분류: 위험필터 확인대상 9 / 확인값 늦음 2 / 못 사는 상승 2 / 방아쇠 실패 1 / 배차/coverage 실패 1
+- 원인원본: coverage_buried 134 / strategy_rejected_or_observed 19 / feature_late 2 / orderflow_late 1 / trigger_wait_missed 1
+- 배차/coverage 실패 샘플: NIL S2 max +5.62% / gap -0.31% / 체결 0.50, 지속 0.50, 스프 0.22, 미끄 0.22
+- 못 사는 상승 샘플: NFT S2 max +25.00% / gap +0.00% / 체결 0.02, 지속 0.02, 스프 22.22, 미끄 22.22 / HIGH S2 max +16.26% / gap -0.32% / 체결 0.51, 지속 0.51, 스프 1.64, 미끄 1.64
+- 방아쇠 실패 샘플: PLUME S2 max +1.62% / gap -0.32% / 체결 0.63, 지속 0.61, 스프 0.20, 미끄 0.20
+- 확인값 늦음 샘플: XTER S2 max +0.91% / gap -0.30% / 체결 0.83, 지속 0.83, 스프 0.15, 미끄 0.15 / PROS S2 max +5.08% / gap -0.30% / 체결 0.17, 지속 0.17, 스프 0.12, 미끄 0.12
+- 위험필터 확인대상 샘플: PARTI S2 max +2.62% / gap -0.30% / 체결 0.74, 지속 0.74, 스프 0.14, 미끄 0.14 / WAVES S3 max +26.29% / gap -0.31% / 체결 0.15, 지속 0.15, 스프 0.52, 미끄 0.52 / TOKAMAK S3 max +8.11% / gap -0.30% / 체결 0.73, 지속 0.73, 스프 0.54, 미끄 0.54
+[가격반응 지연·체결착시 품질판]
+- 현재 후보 품질: 품질보류 130 / 체결선행 가격대기 46 / 체결선행 관찰 19 / 실행비용 부담 17 / 거래불가 상승/품질제외 10 / 체결착시 위험 5 / 가격체결 동시강함 1
+- 놓친 상승 품질: 상승했지만 품질불명 5 / 상승부족/보류 5 / 가격후행 성공 3 / 거래불가 상승/품질제외 2
+- 산 후보 후속검증: 새 CLOSED 후속검증 없음
+- 가격후행 성공: PARTI S2 max +2.62% / 반응 +0.00 체결 0.74 지속 0.74 스프 0.14 미끄 0.14 / XTER S2 max +0.91% / 반응 +0.00 체결 0.83 지속 0.83 스프 0.15 미끄 0.15 / ORCA S2 max +5.65% / 반응 -0.07 체결 0.72 지속 0.64 스프 0.33 미끄 0.33
+- 거래불가 상승/품질제외: NFT S2 max +25.00% / 반응 +0.00 체결 0.02 지속 0.02 스프 22.22 미끄 22.22 / HIGH S2 max +16.26% / 반응 +0.00 체결 0.51 지속 0.51 스프 1.64 미끄 1.64
+- 체결선행 가격대기: XRP(S2 반응 +0.06 체결 0.92 지속 0.80 스프 0.06) / SOL(S2 반응 +0.10 체결 0.92 지속 0.93 스프 0.10) / QTUM(S2 반응 +0.09 체결 0.98 지속 0.98 스프 0.19)
+- 체결착시 위험: EDEN(S2 반응 -0.14 체결 0.99 지속 0.99 스프 0.12) / NEAR(S2 반응 -0.13 체결 0.76 지속 0.78 스프 0.22) / ALLO(S2 반응 -0.34 체결 0.79 지속 0.79 스프 0.34)
+- 판독: 가격반응을 무조건 기다릴지, 체결선행을 일부 살릴지, 체결착시를 막을지 보는 품질판
+[공통초입 검증]
+- 관찰 228 / 통과 0 / 승격 0
+- 막힌 체크: 가격반응 부족 217 / 체결 부족 174 / 1분지속 부족 174 / 실행비용 부담 171 / VWAP/EMA 위치 불량 60
+- 패턴 TOP: common_scalp|above_vwap_ema 65 / common_scalp|common_watch 31 / common_scalp|money_expand|above_vwap_ema 26 / common_scalp|buy_very_strong|sustain_strong|above_vwap_ema 24 / common_scalp|buy_very_strong|sustain_strong|money_expand|above_vwap_ema 10
+- 샘플: BCH(S2/구조형/sustain_mid|money_expand|a / 반응 +0.03 체결 0.67 지속 0.65 스프 0.07) / WLD(S2/구조형/react_mid|buy_very_strong| / 반응 +0.27 체결 0.86 지속 0.80 스프 0.14) / EDEN(S2/구조형/buy_very_strong|sustain_st / 반응 -0.14 체결 0.99 지속 0.99 스프 0.12) / MVC(S2/구조형/sustain_mid|money_expand|a / 반응 -0.05 체결 0.67 지속 0.68 스프 0.05)
+[구조별 검증]
+- 구조타입: 계산선 재확인형 101 / VWAP·EMA 방어형 75 / 돌파 유지형 39 / 공통 구조형 9 / 지지선 반등형 4
+- 계획상태: 위험 커서 보류 153 / 구조계획 좋음 47 / 구조계획 준비됨 26 / 손익비 대기 2
+- 구조주의: 계산선 재확인 196
+- 샘플: BCH(S2/VWAP·EMA 방어형/구조계획 좋음/RR 2.075/gap 0%) / WLD(S2/VWAP·EMA 방어형/위험 커서 보류/RR 1.991/gap 0%) / EDEN(S2/VWAP·EMA 방어형/위험 커서 보류/RR 0.57/gap 0%) / MVC(S2/VWAP·EMA 방어형/구조계획 좋음/RR 1.769/gap 0%)
+[재확인 freshness]
+- S2 대상 211 / 상태: 최신 업데이트 123 / 최신이지만 값 변화 없음 88
+- 자료 나이: 자료 20초 이내 211
+- 보관자료 나이: strategy 6.5s / candidate 5.6s / router 0.0s / paper 전달 14.7s
+- 샘플: BCH S2 / 최신 업데이트 / 확인 7회 / 변화 4 / age 3.5s / gap 0% / 체결 0.67, 지속 0.65 / WLD S2 / 최신 업데이트 / 확인 2회 / 변화 5 / age 3.5s / gap 0% / 체결 0.86, 지속 0.80 / EDEN S2 / 최신이지만 값 변화 없음 / 확인 4회 / 변화 0 / age 3.5s / gap 0% / 체결 0.99, 지속 0.99 / MVC S2 / 최신 업데이트 / 확인 4회 / 변화 5 / age 3.5s / gap 0% / 체결 0.67, 지속 0.68
+- 판독기준: 여러 번 확인했는지(seen), 값이 변했는지, 자료 나이가 60초를 넘는지 확인
+- 다음 판단: 가격후행 성공은 살릴 후보, 체결착시/후속실패는 차단 후보, 거래불가 상승은 버릴 후보
+
+[가격반응 지연·체결착시 품질판 상세]
+[가격반응 지연·체결착시 품질판]
+- 현재 후보 품질: 품질보류 130 / 체결선행 가격대기 46 / 체결선행 관찰 19 / 실행비용 부담 17 / 거래불가 상승/품질제외 10 / 체결착시 위험 5 / 가격체결 동시강함 1
+- 놓친 상승 품질: 상승했지만 품질불명 5 / 상승부족/보류 5 / 가격후행 성공 3 / 거래불가 상승/품질제외 2
+- 산 후보 후속검증: 새 CLOSED 후속검증 없음
+- 가격후행 성공: PARTI S2 max +2.62% / 반응 +0.00 체결 0.74 지속 0.74 스프 0.14 미끄 0.14 / XTER S2 max +0.91% / 반응 +0.00 체결 0.83 지속 0.83 스프 0.15 미끄 0.15 / ORCA S2 max +5.65% / 반응 -0.07 체결 0.72 지속 0.64 스프 0.33 미끄 0.33
+- 거래불가 상승/품질제외: NFT S2 max +25.00% / 반응 +0.00 체결 0.02 지속 0.02 스프 22.22 미끄 22.22 / HIGH S2 max +16.26% / 반응 +0.00 체결 0.51 지속 0.51 스프 1.64 미끄 1.64
+- 체결선행 가격대기: XRP(S2 반응 +0.06 체결 0.92 지속 0.80 스프 0.06) / SOL(S2 반응 +0.10 체결 0.92 지속 0.93 스프 0.10) / QTUM(S2 반응 +0.09 체결 0.98 지속 0.98 스프 0.19)
+- 체결착시 위험: EDEN(S2 반응 -0.14 체결 0.99 지속 0.99 스프 0.12) / NEAR(S2 반응 -0.13 체결 0.76 지속 0.78 스프 0.22) / ALLO(S2 반응 -0.34 체결 0.79 지속 0.79 스프 0.34)
+- 판독: 가격반응을 무조건 기다릴지, 체결선행을 일부 살릴지, 체결착시를 막을지 보는 품질판
+- 판단연결 태그: 품질 관찰 157 / 체결은 강한데 가격이 안 따라옴 39 / 가격 따라붙는지 재확인 32
+- 가격 따라붙는지 재확인: BCH(S2 반응 +0.03 체결 0.67 지속 0.65) / MVC(S2 반응 -0.05 체결 0.67 지속 0.68) / LINK(S2 반응 +0.00 체결 0.64 지속 0.64)
+- 체결은 강한데 가격이 안 따라옴: EDEN(S2 반응 -0.14 체결 0.99 지속 0.99) / NEAR(S2 반응 -0.13 체결 0.76 지속 0.78) / VIRTUAL(S2 반응 +0.00 체결 1.00 지속 1.00)
+
+[OPEN직전 보류 사후검증]
+- OPEN직전 보류검증: rows 240 / 막은뒤상승 196 / 잘막음 16
+- 보류사유 TOP: 방아쇠 미도달 239 / paper 최종보류 1
+- 검증상태 TOP: 막은 뒤 상승 196 / 후속 없음 만료 26 / 잘 막음 16 / 검증대기 2
+- 막은 뒤 간 후보: MBX 방아쇠 미도달 max +13.00% / DEXE 방아쇠 미도달 max +9.05% / KAT 방아쇠 미도달 max +8.91% / TOSHI 방아쇠 미도달 max +7.45% / OBT 방아쇠 미도달 max +6.26% / PHA 방아쇠 미도달 max +6.18% / SUNDOG 방아쇠 미도달 max +6.18% / PROS 방아쇠 미도달 max +6.13% / BOBA 방아쇠 미도달 max +5.63% / BOBA 방아쇠 미도달 max +5.63%
+
+[아까운 후보 / 놓친 후보 상세]
+- source: review_worker missed cache / age 13.6s
+- 추적 456 / 판정완료 394 / 상승후보 157 / 진짜 아까움 3
+- 놓친 이유 TOP: 후보 전 단계에 묻힘 134 / strategy_rejected_or_observed 19 / feature 반응 늦음 2 / 체결/orderflow 늦음 1 / 방아쇠 대기 후 상승 1
+[진짜 아까운 후보 TOP]
+- PARTI S2 / 이후최고 +2.62% / 현재 +2.10% / strategy_rejected_or_observed / 이유 자료 오래됨 의심
+- PLUME S2 / 이후최고 +1.62% / 현재 +1.30% / 방아쇠 대기 후 상승 / 이유 v826 MTF 구조 재확인 상위 / v820 S1승격 보류 / 실행비용 …
+- XTER S2 / 이후최고 +0.91% / 현재 +0.91% / 체결/orderflow 늦음 / 이유 구조부정: 체결은 강한데 가격이 안 따라옴 체결착시 현재 cycle
+[아까운 상승 후보 TOP]
+- WAVES S3 / 이후최고 +26.29% / 현재 +26.29% / strategy_rejected_or_observed / 이유 생존위험: spread 0.52% / 생존위험: slippage 0.52%
+- NFT S2 / 이후최고 +25.00% / 현재 +25.00% / 후보 전 단계에 묻힘 / 이유 생존위험: spread 22.22% / 생존위험: slippage 22.2…
+- HIGH S2 / 이후최고 +16.26% / 현재 +16.26% / 후보 전 단계에 묻힘 / 이유 생존위험: spread 1.64% / 생존위험: slippage 1.64%
+- TOKAMAK S3 / 이후최고 +8.11% / 현재 +3.60% / strategy_rejected_or_observed / 이유 생존위험: spread 0.54% / 생존위험: slippage 0.54%
+- XPL S3 / 이후최고 +7.81% / 현재 +7.81% / strategy_rejected_or_observed / 이유 자료 오래됨 의심 / 생존위험: spread 0.78% /…
+- OPEN S2 / 이후최고 +6.58% / 현재 +6.58% / 후보 전 단계에 묻힘 / 이유 자료 오래됨 의심
+- ZBT S3 / 이후최고 +6.25% / 현재 +6.25% / strategy_rejected_or_observed / 이유 자료 오래됨 의심 / 생존위험: spread 0.62% /…
+- ORCA S2 / 이후최고 +5.65% / 현재 +5.65% / 후보 전 단계에 묻힘 / 이유 자료 오래됨 의심
+- NIL S2 / 이후최고 +5.62% / 현재 +4.83% / 후보 전 단계에 묻힘 / 이유 v820 S1승격 보류 / 구조계획 좋음 아님 / 실행비용 대기 sprea…
+- AI S2 / 이후최고 +5.33% / 현재 +4.79% / 후보 전 단계에 묻힘 / 이유 자료 오래됨 의심
+- 다음 판정 포인트: 방아쇠 1 / coverage 134 / orderflow 1
+- 판독: 이 표는 조건완화가 아니라 “안 샀는데 오른 이유”를 보는 복기표
+
+[명령별 상세]
+
+/health
+🧭 시스템 건강상태 /health
+
+① 실행 상태
+- 메인봇: 수익형 v2.13.847 / v847_live_ledger_normalized_dedup_2026-06-12
+- paper: paper_bot_v0.803 / build paper_latest_actual_cleanup_v846_2026-06-12 / OPEN 0
+- worker: ✅ 9 / ⚠️ 0 / ❌ 0 · TOP strategy 10.6s / target_router 5.8s / candle 5.2s
+
+② worker 최신성
+- ✅ strategy: 10.6s / state running / rows 456
+- ✅ target_router: 5.8s / state running / rows -
+- ✅ candle: 5.2s / state running / rows 448
+- ✅ risk: 2.8s / state running / rows -
+- ✅ market: 2.1s / state running / rows 453
+- ✅ orderflow: 1.5s / state running / rows 456
+- ✅ scanner: 1.2s / state running / rows 456
+- ✅ review: 1.2s / state running / rows -
+- ✅ feature: 1.2s / state running / rows 456
+
+③ 후보/cache
+- 후보 snapshot: S1 0 / S2 211 / S3 17 / 실전후보 228 / coverage 228 / raw S3 185 / age 4.1s
+- 기준: strategy compact snapshot 우선(clean_candidate_latest_snapshot.json). 기본 명령은 paper_candidates_latest.jsonl 전체파싱 금지.
+✅ 재확인 배관: strategy status 10.6s/rows 456 · publish 4.1s · compact 4.1s · latest파일 24.8s · structure 4.8s · queue 5.8s · target_router 5.8s · paper 전달 14.1s
+- 판정: 재확인 캐시 최신권
+- 전략공장 병목: phase - / last 22.39s / publish 0.00s / display_throttle ON / display_age 15.6s / schema -
+- S2→S1 미승격 TOP: 생존위험 134 / VWAP/EMA 방어 후속 확인 대기 100 / v826 MTF 구조 재확인 상위 91 / v820 S1승격 보류 67 / 구조계획 좋음 아님 39
+
+④ 자원
+✅ CPU: 42.0% / load [8.4, 9.26, 9.29] / 코어당 1.05
+✅ 디스크: 71.0% 사용 / 남음 4.15GB
+✅ 메모리: 22.9% 사용 / 여유 24733.7MB
+
+⑤ 정리/보관
+- 보존: paper OPEN/CLOSED 원장, trade_log, score 요약
+- 삭제/순환: 구조계획 상세 cache, batch 임시 txt, 후보/recheck/debug/trace 임시파일
+- cleanup: ❌ age 61.7s / trace 정리 0줄 / 임시 파일 0개
+- score hot: 최근 24.0h 또는 tail 420 / CLOSED 원장 보존 True
+- 손절초과: 0건 / 평균초과 +0.00% / 최대초과 +0.00% / 가격age의심 0 / 루프gap의심 0
+- 자동 정리: ✅ checked 90 / 삭제 파일 0개 / 삭제 용량 0.00MB / 보존 38개 / 실패 0개
+- 대상 밖 큰 파일 TOP: paper_candidates_latest.jsonl 225.67MB / paper_candidates_latest.jsonl.tmp 206.6MB / coin_factory_store.sqlite3 60.23MB / clean_strategy_s_reject_summary.json 30.62MB / shadow_candidates.jsonl.bak_prune_20260513_123359 20.47MB
+- cleanup v798: ✅ 임시cache checked 11 / 삭제 0개 0.00MB / 보존 10개 / 실패 0개
+- 보존정책: OPEN/CLOSED/trade_log/score 원장 보존 · 구조계획/후보/재확인/상세 cache 1~2일 순환
+
+/cleanup_status
+🧹 live ledger normalized 정리 /cleanup_status · v847
+- 판독: ❌ 정리 필요 · 회수 부족
+- 디스크: 사용 69.4% / 남음 4.37GB / 목표 5.0GB
+- v840 정리: 대상 0개 / 회수 0.0MB / 실패 1개 / free +0GB
+- 구형 cache/state: 격리·reset 0개 / 절감 0.0MB / placeholder 0개
+- 보관정책: 일반 파일 2~3일, trace/debug/cache 2일 중심, 요약txt 6시간, archive 2일
+- 보존: OPEN/CLOSED 핵심 원장 · trade_log · score 핵심 · 현재 latest snapshot 삭제 금지
+- 큰 파일 TOP: paper_candidates_latest.jsonl 225.7MB/상한관리/paper owner snapshot 기준 / coin_factory_store.sqlite3 60.23MB/보호/삭제금지 / paper_bot_closed.jsonl 32.04MB/보호/삭제금지 / clean_strategy_s_reject_summary.json 30.62MB/관찰/정책검토 / shadow_candidates.jsonl.bak_prune_20260513_123359 20.47MB/관찰/정책검토
+- 실패샘플: paper_candidates_latest.jsonl: PermissionError
+- DISK-004: paper_candidates_latest.jsonl 225.7MB / 상한 45.0MB / 정리주인 paper_bot / main 직접 truncate 금지
+- 권한오류 확인: main 직접 정리 경로 제거됨 · paper owner cleanup으로 이관
+- paper owner 결과: before 225.89MB → after -MB / saved -MB / errors 1
+
+[paper_latest source 단일화]
+- 기준: paper_latest_actual_cleanup_v846 / 표시 225.7MB / live 225.7MB / owner_done False
+
+[SOURCE-001 source 단일화]
+- 판독: ✅ stale 표시 단일화: worker/candidate age 정상, 구 stale 라벨은 무시
+- 자료 오래됨 표시: 이유횟수 0 / 후보행 0
+- 분류: 실제 오래됨 0 / 멀쩡한데 오래됨 의심 0 / 나이값 없음 0
+- 실제 자료 나이: 후보파일 17.3s / worker 전략 1.4s / 체결/호가 1.6s / 가격특징 2.6s / 캔들 1.4s / 재확인배차 19.8s / 복기 15.3s
+
+[실시간 장부]
+- live ledger: ✅ age 0.0s / active 13개 / DONE archive 23개 / stale True / schema issue_ledger_live_v847
+- current_work: DISK-004/DISK-005 / resume_to: TRIGGER-001 after disk/source board is trustworthy
+- active 장부: OPEN/CHECK만 표시 · DONE은 archive로 이동
+- dedup: DONE archive는 issue_id+resolved_version 기준 중복 차단
+- Telegram: normalized live ledger 표시층
+- live path: /home/dangdang971216/trading_bot/ledger/issue_ledger_live.json
+- done archive: /home/dangdang971216/trading_bot/ledger/done_archive.jsonl
+- events path: /home/dangdang971216/trading_bot/ledger/issue_ledger_events.jsonl
+- queue path: /home/dangdang971216/trading_bot/ledger/next_work_queue_live.json
+- old preserve: runtime-owned DISK/SOURCE/meta 구 OPEN 재보존 금지
+
+[다음 수술 큐]
+- 현재 작업: DISK-004/DISK-005 · paper_latest actual file 또는 owner_done 기준 미충족
+- 복귀 작업: TRIGGER-001 after disk/source board is trustworthy
+- 순서: DISK-004/DISK-005 → SOURCE-001 → TRIGGER-001 → QUALITY-001/LATE-001
+- 금지: 조건/S1·S2·S3 기준/trigger 산식/청산/paper OPEN/guard 변경 금지
+- blocked_by: paper_latest/source normalized ledger cleanup
+- 닫는 기준: paper_latest/SOURCE 구값 재등록 0 · issue_ledger 1초대 · TRIGGER-001로 복귀
+
+[장부 연결: OPEN/CHECK만]
+🧾 미해결/해결 장부
+- ZIP_LEDGER-001 ❌ 배포 zip 내부 장부 seed 포함: coinbot_update zip 안에 ledger seed/queue/manifest/verify/policy 포함
+- DISK-004 ❌ paper_candidates_latest 권한/owner 정리: paper_latest 225.7MB / tmp 0.0MB / owner_done False
+- TRIGGER-001 ❌ 방아쇠 미도달 세부분류: 미도달 239 / 과상향 22 / 진짜 15 / paper 전달 39
+- DISK-001 ❌ 디스크 큰 파일 순환정리: 남음 4.37GB / 목표 5.0GB / 회수 0.0MB / 실패 1
+- DISK-002 ❌ 구형 cache/state 격리·재생성 정리: 격리/reset 0개 / 절감 0.0MB
+- DISK-003 ❌ 디스크 급증 방지 상한선: paper latest/log/trace/cache 상한 적용 · free 4.37GB
+- LATE-001 ❌ 늦은 진입 분리: OXT first→open 210초 늦은 진입 의심 / paper 전달·trigger대기·후속무반응 분리 필요
+- LEDGER-001 ❌ 전체 장부/복기/샘플 순환정리: OPEN 유지 0 / CHECK 유지 0 / DONE 보관 0 / 샘플축약 0 / 회수 177.81MB
+- QUALITY-001 ❌ 체결착시/가격무반응 분리: 체결은 강한데 가격이 안 따라옴 37 / OXT 체결0.84·지속0.83·최고+0.00·-0.18 종료
+- ERROR-001 🟡 v836/v837 출력함수 NameError + 메뉴등록 오류 추적: v839 구형 cache/state 정리 적용 · 새 오류 없음
+- OUTPUT-001 🟡 구버전 출력함수 호출 잔존 제거: v838에서 미정의 호출 제거 완료 · v839에서는 cache/state 정리만 추가
+- RETENTION-001 🟡 2~3일 보관정책: 일반 파일 2~3일, trace/cache 2일, 요약txt 6시간, archive 2일
+- CANDLE-001 🟡 candle 구조자료 본선 연결: 정상권·소수 fallback 관찰 · HTF 447/456 · MTF 447/456
+
+/batch
+📊 코인봇 운영판 /batch · v847
+① 적용/성과
+- 🧠 main: 수익형 v2.13.847
+- 🧪 paper: paper_bot_v0.803 / OPEN 0
+- 🏷️ build: v847_live_ledger_normalized_dedup_2026-06-12
+❌ 최근 24시간: 1전 0승 1패 / 합산 -0.18% / 평균 -0.18%
+❔ 최근 3시간: 0전
+❔ 최근 6시간: 0전
+
+② 실시간 장부
+- live ledger: ✅ age 0.0s / active 13개 / DONE archive 23개 / stale True / schema issue_ledger_live_v847
+- current_work: DISK-004/DISK-005 / resume_to: TRIGGER-001 after disk/source board is trustworthy
+- active 장부: OPEN/CHECK만 표시 · DONE은 archive로 이동
+- dedup: DONE archive는 issue_id+resolved_version 기준 중복 차단
+- Telegram: normalized live ledger 표시층
+
+③ 다음 수술 큐
+- 현재 작업: DISK-004/DISK-005 · paper_latest actual file 또는 owner_done 기준 미충족
+- 복귀 작업: TRIGGER-001 after disk/source board is trustworthy
+- 순서: DISK-004/DISK-005 → SOURCE-001 → TRIGGER-001 → QUALITY-001/LATE-001
+- 금지: 조건/S1·S2·S3 기준/trigger 산식/청산/paper OPEN/guard 변경 금지
+- blocked_by: paper_latest/source normalized ledger cleanup
+
+④ source/정리 신뢰도
+- 판독: ✅ stale 표시 단일화: worker/candidate age 정상, 구 stale 라벨은 무시
+- 자료 오래됨 표시: 이유횟수 0 / 후보행 0
+- 분류: 실제 오래됨 0 / 멀쩡한데 오래됨 의심 0 / 나이값 없음 0
+- 실제 자료 나이: 후보파일 17.3s / worker 전략 2.0s / 체결/호가 0.6s / 가격특징 0.9s / 캔들 3.8s / 재확인배차 0.9s / 복기 0.9s
+- paper_latest: 225.7MB / owner_done False / source paper_latest_actual_cleanup_v846
+
+⑤ 지금 병목
+- 실전후보: S1 0 / S2 211 / S3 17 / 합계 228
+- 판독: 🟡 S1 없음: 구조계획·trigger·실행위험 재확인 필요
+- 구조자료: HTF candle 450/456 · MTF candle 450/456
+- 병목: HTF 확인 88/관찰 139 · MTF 확인 150/관찰 77/자료없음 1 · LTF ready 2/wait 19/not_ready 207
+- 구조타입 TOP: VWAP·EMA 방어 212 / 돌파 유지 9 / 저점쓸림 후 회복 7
+- 후보역할 TOP: 구조 재확인 97 / MTF+품질 재확인 76 / 구조 약함 재확인 31 / 위험 관찰 17
+- S1 막힘 TOP: v826 MTF 구조 재확인 상위 76 / trigger/gap 대기 0.302% 4 / trigger/gap 대기 0.329% 2 / trigger/gap 대기 0.306% 2 / trigger/gap 대기 0.305% 2
+
+⑥ TRIGGER-001 세부분류
+- 대상: 방아쇠 미도달 239 / 막은뒤상승 196
+- 세부분류: 중복 trace 126 / paper 전달/급등통과 의심 39 / 후속없음 만료 22 / 계산선 과상향 의심 22 / 진짜 놓침 15 / 잘 막음 12 / 검증대기 2 / 거래불가 상승 1
+- 판독: 계산선 과상향 의심 22건 → 구조선/trigger 산식 검산 우선
+- 계산선 과상향 의심 샘플: ATOM max +1.30% now -0.80% / gap -0.300% / 계산선 재확인·계산선 재확인 / 체결 0.02/지속 0.02 / 스프 0.20/미끄 0.20 / LPT max +1.42% now +0.30% / gap -0.297% / 계산선 재확인·계산선 재확인 / 체결 0.47/지속 0.47 / 스프 0.19/미끄 0.19 / PEAQ max +1.16% now -0.39% / gap -0.298% / 계산선 재확인·돌파 유지 / 체결 0.39/지속 0.39 / 스프 0.21/미끄 0.21
+- paper 전달/급등통과 의심 샘플: SUI max +0.71% now +0.71% / gap +0.000% / 확정선·VWAP·EMA 방어 / 체결 1.00/지속 1.00 / 스프 0.18/미끄 0.18 / XRP max +0.70% now +0.70% / gap +0.000% / 확정선·VWAP·EMA 방어 / 체결 0.92/지속 0.80 / 스프 0.06/미끄 0.06 / PENGU max +0.98% now -0.98% / gap +0.000% / 확정선·VWAP·EMA 방어 / 체결 0.77/지속 0.77 / 스프 0.10/미끄 0.10
+- 진짜 놓침 샘플: TOSHI max +5.22% now +0.80% / gap +0.298% / 자료없음·자료없음 / 체결 - / 실행비용 - / TEMCO max +2.41% now +0.59% / gap +0.300% / 자료없음·자료없음 / 체결 - / 실행비용 - / TEMCO max +3.49% now +1.65% / gap +0.300% / 자료없음·자료없음 / 체결 - / 실행비용 -
+
+⑦ 문제장부
+🧾 미해결/해결 장부
+- ZIP_LEDGER-001 ❌ 배포 zip 내부 장부 seed 포함: coinbot_update zip 안에 ledger seed/queue/manifest/verify/policy 포함
+- DISK-004 ❌ paper_candidates_latest 권한/owner 정리: paper_latest 225.7MB / tmp 0.0MB / owner_done False
+- TRIGGER-001 ❌ 방아쇠 미도달 세부분류: 미도달 239 / 과상향 22 / 진짜 15 / paper 전달 39
+- DISK-001 ❌ 디스크 큰 파일 순환정리: 남음 4.37GB / 목표 5.0GB / 회수 9.46MB / 실패 0
+- DISK-002 ❌ 구형 cache/state 격리·재생성 정리: 격리/reset 0개 / 절감 0.0MB
+- DISK-003 ❌ 디스크 급증 방지 상한선: paper latest/log/trace/cache 상한 적용 · free 4.37GB
+- LATE-001 ❌ 늦은 진입 분리: OXT first→open 210초 늦은 진입 의심 / paper 전달·trigger대기·후속무반응 분리 필요
+- QUALITY-001 ❌ 체결착시/가격무반응 분리: 체결은 강한데 가격이 안 따라옴 37 / OXT 체결0.84·지속0.83·최고+0.00·-0.18 종료
+- ERROR-001 🟡 v836/v837 출력함수 NameError + 메뉴등록 오류 추적: v839 구형 cache/state 정리 적용 · 새 오류 없음
+- LEDGER-001 🟡 전체 장부/복기/샘플 순환정리: OPEN 유지 0 / CHECK 유지 0 / DONE 보관 0 / 샘플축약 0 / 회수 0.0MB
+- OUTPUT-001 🟡 구버전 출력함수 호출 잔존 제거: v838에서 미정의 호출 제거 완료 · v839에서는 cache/state 정리만 추가
+- RETENTION-001 🟡 2~3일 보관정책: 일반 파일 2~3일, trace/cache 2일, 요약txt 6시간, archive 2일
+- CANDLE-001 🟡 candle 구조자료 본선 연결: 정상권·소수 fallback 관찰 · HTF 447/456 · MTF 447/456
+
+⑧ 다음
+- 먼저 live ledger 구값 재등록을 끊는다.
+- DISK/SOURCE가 모든 명령에서 같은 현재값인지 확인한다.
+- 통과 후 TRIGGER-001로 복귀한다.
+
+/issue_ledger
+🧾 실시간 문제장부 /issue_ledger · v847
+- live ledger: ✅ age 0.0s / active 12개 / DONE archive 24개 / stale True / schema issue_ledger_live_v847
+- current_work: TRIGGER-001 / resume_to: TRIGGER-001 after disk/source board is trustworthy
+- active 장부: OPEN/CHECK만 표시 · DONE은 archive로 이동
+- dedup: DONE archive는 issue_id+resolved_version 기준 중복 차단
+- Telegram: normalized live ledger 표시층
+- live path: /home/dangdang971216/trading_bot/ledger/issue_ledger_live.json
+- done archive: /home/dangdang971216/trading_bot/ledger/done_archive.jsonl
+- events path: /home/dangdang971216/trading_bot/ledger/issue_ledger_events.jsonl
+- queue path: /home/dangdang971216/trading_bot/ledger/next_work_queue_live.json
+- old preserve: runtime-owned DISK/SOURCE/meta 구 OPEN 재보존 금지
+
+[DONE archive: 24개 / dedup issue_id+resolved_version / active에서 숨김]
+- 최근 archive: PAPER-RUNTIME-001 / PAPER-001 / PAPER-002 / CANDLE-001 / DISPLAY-001 / MENU-001 / SOURCE-001 / DISK-004
+
+[문제장부: OPEN/CHECK만 유지]
+- ZIP_LEDGER-001 ❌ 배포 zip 내부 장부 seed 포함
+  · 상태: OPEN / 현재: coinbot_update zip 안에 ledger seed/queue/manifest/verify/policy 포함
+  · 주인: release bundle manifest
+  · 닫는 기준: zip 장부가 서버 live 장부를 덮어쓰지 않고 merge 기준표로만 작동
+- TRIGGER-001 ❌ 방아쇠 미도달 세부분류
+  · 상태: OPEN / 현재: 미도달 239 / 과상향 22 / 진짜 15 / paper 전달 39
+  · 주인: strategy 구조선 → paper trigger gate
+  · 닫는 기준: 중복·거래불가·진짜놓침·계산선오류·확정선미도달·paper 전달지연 분류 완료
+- DISK-001 ❌ 디스크 큰 파일 순환정리
+  · 상태: OPEN / 현재: 남음 4.57GB / 목표 5.0GB / 회수 28.06MB / 실패 0
+  · 주인: main v840 emergency cleanup + paper cleanup
+  · 닫는 기준: 남은 용량 5GB 근처 확보 및 큰 cache/log 상한관리
+- DISK-002 ❌ 구형 cache/state 격리·재생성 정리
+  · 상태: OPEN / 현재: 격리/reset 0개 / 절감 0.0MB
+  · 주인: main v840 emergency cleanup
+  · 닫는 기준: candidate_reason/recheck/s1_lifecycle 구형 파일이 live reset되고 현재 worker가 재생성
+- DISK-003 ❌ 디스크 급증 방지 상한선
+  · 상태: OPEN / 현재: paper latest/log/trace/cache 상한 적용 · free 4.57GB
+  · 주인: main/paper cleanup policy
+  · 닫는 기준: 파일 급증이 멈추고 free 5GB 전후 유지
+- LATE-001 ❌ 늦은 진입 분리
+  · 상태: OPEN / 현재: OXT first→open 210초 늦은 진입 의심 / paper 전달·trigger대기·후속무반응 분리 필요
+  · 주인: paper paper 전달 trace
+  · 닫는 기준: paper 전달 지연·trigger대기·진짜 추격·후속무반응을 분리
+- LEDGER-001 ❌ 전체 장부/복기/샘플 순환정리
+  · 상태: OPEN / 현재: OPEN 유지 0 / CHECK 유지 0 / DONE 보관 0 / 샘플축약 0 / 회수 178.04MB
+  · 주인: paper cleanup state → main cleanup board
+  · 닫는 기준: OPEN/CHECK 미해결은 유지, DONE/오래된 샘플/반복노이즈는 보관·축약
+- QUALITY-001 ❌ 체결착시/가격무반응 분리
+  · 상태: OPEN / 현재: 체결은 강한데 가격이 안 따라옴 37 / OXT 체결0.84·지속0.83·최고+0.00·-0.18 종료
+  · 주인: quality/review → strategy/paper 보류판
+  · 닫는 기준: 가격후행 성공과 체결착시를 분리하고, OXT형 무반응 진입을 후속검증 완료
+- ERROR-001 🟡 v836/v837 출력함수 NameError + 메뉴등록 오류 추적
+  · 상태: CHECK / 현재: v839 구형 cache/state 정리 적용 · 새 오류 없음
+  · 주인: main 출력 함수 연결 + Telegram command menu registration
+  · 닫는 기준: /batch·/paper_gate_audit·/commands·/cleanup_status가 모두 정상이고 새 실행 오류 없음
+- OUTPUT-001 🟡 구버전 출력함수 호출 잔존 제거
+  · 상태: CHECK / 현재: v838에서 미정의 호출 제거 완료 · v839에서는 cache/state 정리만 추가
+  · 주인: main /batch 출력 builder
+  · 닫는 기준: 정의 없는 _v숫자_ 함수 호출 0개 + /batch 정상
+- RETENTION-001 🟡 2~3일 보관정책
+  · 상태: CHECK / 현재: 일반 파일 2~3일, trace/cache 2일, 요약txt 6시간, archive 2일
+  · 주인: cleanup policy
+  · 닫는 기준: 핵심 원장 제외 파일이 짧은 보관정책으로 자동 순환
+- CANDLE-001 🟡 candle 구조자료 본선 연결
+  · 상태: CHECK / 현재: 정상권·소수 fallback 관찰 · HTF 447/456 · MTF 447/456
+  · 주인: candle_worker → strategy canonical row
+  · 닫는 기준: HTF/MTF candle source 98.5% 이상이면 정상권, fallback은 소수 관찰
+
+[QUEUE 다음 수술 큐]
+- 현재 작업: TRIGGER-001 · 장부/표시 source 신뢰 회복 · 계산선 검산으로 이동
+- 복귀 작업: TRIGGER-001 after disk/source board is trustworthy
+- 순서: DISK-004/DISK-005 → SOURCE-001 → TRIGGER-001 → QUALITY-001/LATE-001
+- 금지: 조건/S1·S2·S3 기준/trigger 산식/청산/paper OPEN/guard 변경 금지
+- 닫는 기준: paper_latest/SOURCE 구값 재등록 0 · issue_ledger 1초대 · TRIGGER-001로 복귀
+
+[SOURCE-001 source 상세]
+- 판독: ✅ stale 표시 단일화: worker/candidate age 정상, 구 stale 라벨은 무시
+- 자료 오래됨 표시: 이유횟수 0 / 후보행 0
+- 분류: 실제 오래됨 0 / 멀쩡한데 오래됨 의심 0 / 나이값 없음 0
+- 실제 자료 나이: 후보파일 26.3s / worker 전략 4.3s / 체결/호가 0.7s / 가격특징 1.8s / 캔들 1.0s / 재확인배차 9.2s / 복기 9.2s
+
+[TRIGGER-001 세부분류 요약]
+- 대상: 방아쇠 미도달 239 / 막은뒤상승 196
+- 세부분류: 중복 trace 126 / paper 전달/급등통과 의심 39 / 후속없음 만료 22 / 계산선 과상향 의심 22 / 진짜 놓침 15 / 잘 막음 12 / 검증대기 2 / 거래불가 상승 1
+- 판독: 계산선 과상향 의심 22건 → 구조선/trigger 산식 검산 우선
+- 계산선 과상향 의심 샘플: ATOM max +1.30% now -0.80% / gap -0.300% / 계산선 재확인·계산선 재확인 / 체결 0.02/지속 0.02 / 스프 0.20/미끄 0.20 / LPT max +1.42% now +0.30% / gap -0.297% / 계산선 재확인·계산선 재확인 / 체결 0.47/지속 0.47 / 스프 0.19/미끄 0.19 / PEAQ max +1.16% now -0.39% / gap -0.298% / 계산선 재확인·돌파 유지 / 체결 0.39/지속 0.39 / 스프 0.21/미끄 0.21
+- paper 전달/급등통과 의심 샘플: SUI max +0.71% now +0.71% / gap +0.000% / 확정선·VWAP·EMA 방어 / 체결 1.00/지속 1.00 / 스프 0.18/미끄 0.18 / XRP max +0.70% now +0.70% / gap +0.000% / 확정선·VWAP·EMA 방어 / 체결 0.92/지속 0.80 / 스프 0.06/미끄 0.06 / PENGU max +0.98% now -0.98% / gap +0.000% / 확정선·VWAP·EMA 방어 / 체결 0.77/지속 0.77 / 스프 0.10/미끄 0.10
+- 진짜 놓침 샘플: TOSHI max +5.22% now +0.80% / gap +0.298% / 자료없음·자료없음 / 체결 - / 실행비용 - / TEMCO max +2.41% now +0.59% / gap +0.300% / 자료없음·자료없음 / 체결 - / 실행비용 - / TEMCO max +3.49% now +1.65% / gap +0.300% / 자료없음·자료없음 / 체결 - / 실행비용 -
+- 닫는 기준: 중복·거래불가·진짜놓침·계산선오류·확정선미도달·paper 전달지연 분류 완료
+
+[다음]
+- 장부 spine이 정상화되면 다음은 TRIGGER-001 계산선/확정선/paper 전달 검산.
+- 아직 조건/산식 완화 금지. 먼저 분류값 봉인.
+- issue_ledger render 7.83s
+
+/paper_gate_audit
+🧪 PAPER-RUNTIME/PAPER-001 trigger spine /paper_gate_audit · v847
+- live ledger: ✅ age 0.0s / active 12개 / DONE archive 24개 / stale True / schema issue_ledger_live_v847
+- current_work: TRIGGER-001 / resume_to: TRIGGER-001 after disk/source board is trustworthy
+- active 장부: OPEN/CHECK만 표시 · DONE은 archive로 이동
+- dedup: DONE archive는 issue_id+resolved_version 기준 중복 차단
+- Telegram: normalized live ledger 표시층
+
+[PAPER-001/PAPER-002]
+- 판독: ✅ paper runtime spine 정상
+- paper_v843: True / trigger spine active True
+- 대상: S1 진입준비 0 / 도달·미도달 충돌 0
+- v628 현재표시: 0회
+- 닫는 기준: paper 최종보류가 본 trigger_price와 hold 표시 trigger/reached가 같은 paper runtime spine으로 표시될 것
+- paper runtime: paper_bot_v0.803 / build paper_latest_actual_cleanup_v846_2026-06-12
+- expected: paper_bot_v0.803 / paper_latest_actual_cleanup_v846_2026-06-12
+- entrypoint pinned: True / trigger spine active True / formula_changed False
+- DISK-004: paper_candidates_latest 19.61MB / latest_ok True / owner_done True
+- tmp 잔여: 0.0MB / stale False
+- 닫는 기준: paper v0.802/v843가 실제 실행되고, latest 20~50MB 유지, trigger spine active True, v628 현재표시 0회
+
+[paper runtime entrypoint]
+- paper runtime: paper_bot_v0.803 / build paper_latest_actual_cleanup_v846_2026-06-12
+- expected: paper_bot_v0.803 / paper_latest_actual_cleanup_v846_2026-06-12
+- entrypoint pinned: True / trigger spine active True / formula_changed False
+- DISK-004: paper_candidates_latest 19.61MB / latest_ok True / owner_done True
+- tmp 잔여: 0.0MB / stale False
+- 닫는 기준: paper v0.802/v843가 실제 실행되고, latest 20~50MB 유지, trigger spine active True, v628 현재표시 0회
+
+[다음 수술 큐]
+- 현재 작업: TRIGGER-001 · 장부/표시 source 신뢰 회복 · 계산선 검산으로 이동
+- 복귀 작업: TRIGGER-001 after disk/source board is trustworthy
+- 순서: DISK-004/DISK-005 → SOURCE-001 → TRIGGER-001 → QUALITY-001/LATE-001
+- 금지: 조건/S1·S2·S3 기준/trigger 산식/청산/paper OPEN/guard 변경 금지
+
+[기존 S1 hold→paper 검산]
+- 판독: ✅ 현재 S1 hold 없음
+- 대상: S1 hold 0 / fresh 0 / 진입준비 0
+- paper 최종보류 TOP: 방아쇠 가격 미도달: 진입 1,717 < 방아쇠 1,720 1
+- 닫는 기준: S1 진입준비가 paper에서 trigger/무반응/paper 전달/가격age 중 어디서 막히는지 후보별로 표시 완료
+
+[장부: OPEN/CHECK만]
+🧾 미해결/해결 장부
+- ZIP_LEDGER-001 ❌ 배포 zip 내부 장부 seed 포함: coinbot_update zip 안에 ledger seed/queue/manifest/verify/policy 포함
+- TRIGGER-001 ❌ 방아쇠 미도달 세부분류: 미도달 239 / 과상향 22 / 진짜 15 / paper 전달 39
+- DISK-001 ❌ 디스크 큰 파일 순환정리: 남음 4.57GB / 목표 5.0GB / 회수 28.06MB / 실패 0
+- DISK-002 ❌ 구형 cache/state 격리·재생성 정리: 격리/reset 0개 / 절감 0.0MB
+- DISK-003 ❌ 디스크 급증 방지 상한선: paper latest/log/trace/cache 상한 적용 · free 4.57GB
+- LATE-001 ❌ 늦은 진입 분리: OXT first→open 210초 늦은 진입 의심 / paper 전달·trigger대기·후속무반응 분리 필요
+- LEDGER-001 ❌ 전체 장부/복기/샘플 순환정리: OPEN 유지 0 / CHECK 유지 0 / DONE 보관 0 / 샘플축약 0 / 회수 178.04MB
+- QUALITY-001 ❌ 체결착시/가격무반응 분리: 체결은 강한데 가격이 안 따라옴 37 / OXT 체결0.84·지속0.83·최고+0.00·-0.18 종료
+- ERROR-001 🟡 v836/v837 출력함수 NameError + 메뉴등록 오류 추적: v839 구형 cache/state 정리 적용 · 새 오류 없음
+- OUTPUT-001 🟡 구버전 출력함수 호출 잔존 제거: v838에서 미정의 호출 제거 완료 · v839에서는 cache/state 정리만 추가
+- RETENTION-001 🟡 2~3일 보관정책: 일반 파일 2~3일, trace/cache 2일, 요약txt 6시간, archive 2일
+- CANDLE-001 🟡 candle 구조자료 본선 연결: 정상권·소수 fallback 관찰 · HTF 447/456 · MTF 447/456
+
+/errorlog
+🧯 오류로그 /errorlog
+
+✅ 새 실행 중 오류 없음
+- 과거 오류 흔적 15줄 있음 / 최근 2개만 참고
+[2026-06-11 14:58:21] v840_compact_tail_inplace: PermissionError: [Errno 13] Permission denied: '/home/dangdang971216/trading_bot/paper_candidates_latest.jsonl'
+PermissionError: [Errno 13] Permission denied: '/home/dangdang971216/trading_bot/paper_candidates_latest.jsonl'
