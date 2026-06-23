@@ -1,0 +1,96 @@
+코인봇 인수인계 v991 FINAL
+작성: 2026-06-23
+전략모드: ALT_SWING_V977
+자동매수: OFF
+
+============================================================
+0. 가장 먼저 볼 결론
+============================================================
+- 서버 마지막 확인본은 main v2.13.989 / paper v0.965 / strategy v0.962 / review v0.976이다.
+- 서버 마지막 성과는 exact 47건, 17승 30패, 합산 -21.55%, 평균 -0.46%다.
+- 최신 의도 source는 main v2.13.991 / paper v0.966이다.
+- v991은 paper status writer 단일화와 v990 상세 TXT 복구를 포함하지만 서버 적용·재시작 검수 전이므로 CHECK다.
+- v989 서버에서 S3 strategy 감지·차단 215, paper selected 0, 신규 S3 OPEN 0, 현재 S3 OPEN 0이 확인됐다.
+- 전체 worker 관리대상 중복 프로세스는 없었고 alias와 versioned source sync는 정상으로 표시됐다.
+- 가장 먼저 v991을 적용해 status writer owner/count/age와 재시작 후 동일성을 확인한다.
+- 그다음 review 과부하·중복, target_router 중복 main/run_once, guard 배포·재시작 중복을 워커별로 정리한다.
+- 전략 수치와 새 매수기능은 0~5단계 감사가 끝날 때까지 보류한다.
+
+============================================================
+1. 이번 방 시작 시점과 변화
+============================================================
+[시작 시점 v988]
+- main v2.13.988, worker 9/9, 새 오류 0.
+- exact 43건 16승 27패, 합산 -14.83%, 평균 -0.34%.
+- fresh /popen이 paper v0.795를 표시해 v988 전체는 PARTIAL이었다.
+- CAMP가 S3 관찰/복기 후보로 OPEN에 남아 있었다.
+- source_missing 1, role_mismatch 371, strategy_blocking_suspect 0.
+
+[최신 서버 증거 v989]
+- main v2.13.989, paper v0.965, canonical writer v989.
+- exact 47건 17승 30패, 합산 -21.55%, 평균 -0.46%.
+- raw 461 / ALT_SWING 47 / exact 47 / 중복0 / key누락0 / 미연결0.
+- 정상 OPEN 12.
+- S3 strategy 감지·차단 215 / selected 0 / 신규 OPEN 0 / 현재 S3 OPEN 0.
+- 새 실행 오류 0.
+
+[v987 35건 이후]
+- v987 기준 35전 16승19패 +12.67%에서 47전 17승30패 -21.55%로 변했다.
+- 신규 12건은 1승11패, 합산 변화 -34.22%p다.
+- 최초 35→43의 8건은 모두 손실, 43→44도 1패, 44→47은 1승2패였다.
+- 원장 상세를 완전히 보지 않고 손절폭·target·gate를 바꾸면 안 된다.
+
+============================================================
+2. 버전별 작업 기록
+============================================================
+[v977 · ALT_SWING 전환]
+- 고정 초단타에서 큰 구조 기반 가변보유로 전환.
+- 4h·2h target/대세, 1h·30m setup/invalid, 15m·5m trigger, 1m·호가 실행 구조.
+- 2.5분 빠른실패와 15분 고정청산 제거.
+- target/invalid 즉시청산, 6h/72h 시간 안전장치.
+
+[v978 · paper swing gate consumer]
+- paper가 구 minimal gate만 읽던 문제를 고쳐 v977 swing gate를 읽도록 연결.
+- S1 hold compact에서 swing 필드 누락 문제는 추가로 남음.
+
+[v979 · swing contract cleanup, FAIL]
+- S1 hold swing 정보와 decision key 보존, 구 fallback 제거를 시도.
+- bundle manifest 오류로 서버 적용 전 실패. 실패 번호 보존.
+
+[v980 · manifest 복구]
+- guard가 strategy를 실제 복사하도록 manifest 수정.
+- selected→OPEN이 구 trigger wrapper에 막혀 PARTIAL.
+
+[v981 · ALT_SWING OPEN writer 단일화 1차]
+- paper 중복 open_position 정의와 구 trigger 재검사 제거.
+- selected 3→OPEN 3 증명. 알림 formatter NameError가 남음.
+
+[v982 · 알림과 paper 다중명령]
+- 구 trigger helper NameError 제거, direct formatter 연결.
+- paper가 한 메시지의 여러 명령을 각각 처리.
+
+[v983 · exact evidence와 청산계약]
+- OPEN/CLOSED에 구조선·RR·비용·MFE/MAE·timing 봉인 확대.
+- 과거 swing_trailing을 현재 reason 목록으로 재필터한 성과 오류 발생.
+
+[v984 · CLOSED 최종 실현손익]
+- 비용 후 최종 실현손익을 상단에 독립 표시.
+
+[v985 · 성과 window 불변성 1차]
+- 과거 거래 membership을 OPEN 당시 전략으로 고정하려 했으나 명령별 row 수가 달라 PARTIAL.
+
+[v986 · canonical performance 설계, FAIL]
+- 단일 writer/snapshot 구조를 설계했으나 guard가 지원하지 않는 manifest modules 키로 적용 전 실패.
+
+[v987 · canonical performance spine 성공]
+- paper 내부 writer 1개, main/review read-only 구조.
+- 세 성과 명령 exact 35건·snapshot·digest 일치 증명.
+
+[v988 · S3 차단과 시각 출력]
+- S3 observation-only 다중 차단과 알림 이모지/가독성 추가.
+- main v988과 exact 43 일치는 확인했으나 paper 구 status 표시로 PARTIAL.
+
+[v989 · S3 runtime audit와 exact loss detail]
+- main v2.13.989 / paper v0.965.
+- S3 감지·차단·selected·신규 OPEN·현재 S3 OPEN 수치를 /popen에 표시.
+- exact 35건 이후 거래 상세를 snapshot/renderer에 연결.
