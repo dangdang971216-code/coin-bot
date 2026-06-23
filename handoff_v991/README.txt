@@ -1,0 +1,1 @@
+Coinbot v991 handoff files. Strategy ALT_SWING_V977. Auto buy OFF.
