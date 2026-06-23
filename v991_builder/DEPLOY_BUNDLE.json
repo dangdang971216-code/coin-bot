@@ -1,0 +1,45 @@
+{
+  "schema": "coinbot_update_bundle_v991",
+  "created_at": "2026-06-23T21:30:00+09:00",
+  "release": "v991_paper_status_single_writer",
+  "bundle_version": "v991",
+  "version": "v991",
+  "deploy_target": "coinbot_main_v2_13_991.py",
+  "main": "coinbot_main_v2_13_991.py",
+  "paper": "paper_bot_v0.966.py",
+  "main_version": "수익형 v2.13.991",
+  "paper_version": "paper_bot_v0.966",
+  "build": "v991_paper_status_single_writer_2026-06-23",
+  "strategy_mode": "ALT_SWING_V977",
+  "auto_buy": false,
+  "runtime_status": "local_pass_server_runtime_pending",
+  "changes": [
+    "delete ten legacy write_status definitions and eight previous-writer alias captures",
+    "delete module-load v0.795 status marker",
+    "route cleanup, hourly trace and shutdown evidence through in-memory status staging",
+    "one canonical write_status owns paper_bot_status.json using unique tmp, fsync and atomic replace",
+    "retain v990 explicit-command detail TXT behavior in main v991"
+  ],
+  "unchanged_components": [
+    "strategy_worker_v0.962",
+    "review_worker_v0.976",
+    "ALT_SWING_V977 thresholds",
+    "entry and exit rules",
+    "canonical performance membership",
+    "raw ledgers",
+    "auto-buy OFF"
+  ],
+  "manifest_python_files": [
+    "coinbot_main_v2_13_991.py",
+    "paper_bot_v0.966.py"
+  ],
+  "server_success_criteria": [
+    "main v2.13.991 and paper v0.966",
+    "active paper process exactly one and active alias hash equals versioned source",
+    "status_writer_owner paper_bot_single_status_writer_v991 and status_writer_count 1",
+    "fresh status age stays current through multiple cycles and after restart",
+    "no new paper_bot_status.json.tmp FileNotFoundError",
+    "version_score, performance_lab and trade_review canonical exact remain identical",
+    "new errors 0"
+  ]
+}
