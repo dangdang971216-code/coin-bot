@@ -1,0 +1,27 @@
+- 워커 하나씩 정리하고 서버 재시작 검수 후 다음 워커로 간다.
+- 현재 우선순위: v991 paper status writer 서버 검수→review 과부하/중복→target_router main/run_once 중복→guard 배포/재시작 중복→main/paper/strategy 기능별 정리.
+- review는 마지막 증거에서 cycle 약 89초·RSS 약 2.4GB이므로 큰 파일 전체 읽기와 중복 분석을 우선 추적한다.
+
+9. runtime·배포·버전
+- 버전은 숫자로 1씩 상승하고 실패 번호를 덮어쓰지 않는다.
+- 적용 후 systemd ExecStart→MainPID→cmdline→alias→versioned source→VERSION/BUILD→hash→status writer/file→Telegram reader→fresh 명령→재시작 후 재검수 순서다.
+- ZIP 존재, guard 성공, alias 존재, MainPID source, Telegram 표시, writer 원장은 각각 별도 증거다.
+- CHECK=서버 검증 전, PARTIAL=일부만 성공, FAIL=적용/실행/검수 실패, DONE=전체 서버 증거 일치.
+- /pstatus는 공개 명령이 아니다. paper runtime은 가드 /gpaper_state와 메인 /popen으로 확인한다.
+- 메인봇 명령과 가드봇 /g* 명령은 반드시 구역을 나눈다.
+- 모든 수정·실패·되돌림·미해결·검수결과를 change_verify와 issue_ledger에 남긴다.
+
+10. 디스크·파일 전달
+- 핵심 거래원장은 삭제하지 않는다. archive·trace·cache·journal·Google 로그의 생성원인과 순환정책을 먼저 고친다.
+- 전체코드 ZIP에는 라이브 거래원장을 넣지 않는다.
+- ChatGPT 앱에서 Interpreter file not found가 반복되면 같은 sandbox 링크를 반복 생성하지 말고 GitHub 직접 다운로드 경로를 사용한다.
+- 최신 source와 마지막 서버 runtime을 문서에서 반드시 분리해 표시한다.
+
+11. 절대 금지
+- 자동매수 ON, BUY_READY 강제, 표본 목적 기준 완화.
+- 신규 손실 감사 전 전략 수치·손절폭·target·gate 변경.
+- 15분 초단타 회귀, 최소 보유시간 추가, 장시간 강제보유.
+- 승인되지 않은 swing_trailing 신규 적용.
+- 원장 삭제, 과거 거래 재분류, main/review 독립 성과 재계산.
+- wrapper/fallback/alias 덧대기, 예외 무시, 출력 강제보정, tail patch.
+- runtime 미검수 상태에서 DONE 또는 수익형 주장.
