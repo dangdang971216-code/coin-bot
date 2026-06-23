@@ -1,0 +1,10 @@
+코인봇 v991 · paper status writer 단일화
+- paper v0.966 / main v2.13.991
+- 구 write_status 정의 10개와 previous-writer alias 8개 삭제
+- module-load v0.795 status 저장 삭제
+- cleanup·hourly·signal은 status 파일 직접 저장 금지, 필드만 staging
+- paper_bot_status.json writer 함수는 최종 write_status 1개
+- unique tmp + fsync + atomic replace
+- v990 명시요청 상세 TXT 복구 포함
+- 전략·진입·청산·성과 membership·원본 원장 변경 없음
+- 자동매수 OFF
