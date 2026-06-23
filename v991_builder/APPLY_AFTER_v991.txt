@@ -1,0 +1,20 @@
+가드봇
+/gupgrade_bundle
+/gpaper_state
+/gpaperlog 80
+
+메인봇
+/popen
+/version_score
+/performance_lab
+/trade_review
+/change_verify
+/issue_ledger
+/errorlog
+
+판정 기준
+- paper v0.966 / writer owner v991 / writer count 1
+- 여러 cycle status age 정상
+- 재시작 후 동일 source/hash/owner 유지
+- status tmp FileNotFoundError 신규 0
+- 세 성과 명령 exact·snapshot 일치
