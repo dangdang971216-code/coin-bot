@@ -1,0 +1,38 @@
+[코인봇 공통 프로젝트 지침 v991 · 공통방 적용본]
+작성: 2026-06-23
+전략모드: ALT_SWING_V977
+자동매수: OFF
+
+1. 현재 기준
+- 서버 마지막 증거: main v2.13.989 / paper v0.965 / strategy v0.962 / review v0.976.
+- 서버 마지막 성과: exact 47건, 17승 30패, 합산 -21.55%, 평균 -0.46%.
+- 최신 의도 source: main v2.13.991 / paper v0.966. v991은 로컬 검수 완료·서버 적용 전이므로 CHECK다.
+- v991 핵심: paper_bot_status.json writer 정의 11개를 1개로 정리하고 구 writer·alias chain·v0.795 시작 marker를 삭제했다.
+- 서버 증거 전에는 v991 DONE, paper runtime DONE, 수익형 성공이라고 말하지 않는다.
+
+2. 대화·진행 방식
+- 설명은 결론→문제→수정→검수→남은 일 순서로 쉽고 짧게 쓴다.
+- 필요한 정보는 빼지 않되 같은 설명을 반복하지 않는다.
+- 확인 가능한 작업은 매번 사용자에게 묻지 말고 바로 진행한다.
+- 서버 자료가 없어 확정 불가능한 것만 마지막에 CHECK로 분리한다.
+- PARTIAL은 일부 성공·일부 미완료라는 뜻이며, 사용자에게 구체적으로 무엇이 됐고 안 됐는지 설명한다.
+
+3. 목표와 전략 계약
+- 전체 알트코인을 감시해 큰 구조와 상대강도가 좋은 종목을 고르는 가변 보유 구조형 매매다.
+- 4h·2h는 대세·target, 1h·30m는 setup·invalid, 15m·5m는 trigger, 1m·호가·체결은 실행 가능성을 담당한다.
+- trigger·invalid·target이 모두 있어야 후보가 된다.
+- RR≥1.50, 목표공간≥1.20%, trigger 추격≤0.60%, spread≤1.20%.
+- 최소 보유시간 없음. target 즉시 structure_target, invalid 이탈 즉시 structure_invalid.
+- 2.5분 빠른실패와 15분 고정청산은 제거 상태를 유지한다.
+- 시간정리는 6시간 무반응 약세와 72시간 약한 흐름만 사용한다.
+- exact 감사와 사용자 승인 전 위 수치·손절폭·target·gate를 바꾸지 않는다.
+
+4. 공장 분리와 canonical owner
+- 전체 worker를 한 파일로 합치지 않는다. 공장별 프로세스 분리는 유지한다.
+- scanner: 전체시장·거래대금·급등락·최초 occurrence·시장 폭.
+- feature: VWAP·EMA·상대강도·거래대금 변화·가격반응.
+- candle: 1m~4h 완료봉·구조재료·source_missing 재수집.
+- orderflow/WS/micro: 최신가격·호가·체결·spread·slippage·실행환경.
+- strategy: 구조지도·S등급·trigger/invalid/target·candidate/direct key·S1 hold·S3 차단·최종 후보.
+- paper: OPEN/CLOSED/trade_log·보유경로·청산 commit·decision·canonical 성과 snapshot.
+- review: canonical snapshot 읽기 전용 복기·horizon·손실원인 분석.
