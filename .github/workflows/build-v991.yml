@@ -1,0 +1,32 @@
+name: Build v991 update ZIP
+
+on:
+  push:
+    branches: [chatgpt-v991-download-20260623]
+    paths:
+      - "v991_builder/**"
+      - ".github/workflows/build-v991.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chatgpt-v991-download-20260623
+      - name: Build and verify
+        run: python3 v991_builder/build_v991.py
+      - name: Commit downloadable ZIP
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add coinbot_update_v991.zip
+          if git diff --cached --quiet; then
+            echo "Already current"
+          else
+            git commit -m "Build coinbot_update_v991.zip"
+            git push origin HEAD:chatgpt-v991-download-20260623
+          fi
