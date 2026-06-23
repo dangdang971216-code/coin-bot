@@ -1,0 +1,19 @@
+코인봇 v991 로컬 검수
+
+- main/paper Python 문법: PASS
+- write_status 정의: 1개
+- paper_bot_status.json 직접 writer 함수: write_status 1개
+- 구 write_status 정의 삭제: 10개
+- 구 previous-writer alias 삭제: 8개
+- 보조 cleanup status 함수는 역할명 staging 함수로 변경
+- unique tmp + fsync + atomic replace
+- 구 paper_bot_status.json.tmp 고정명 사용: 0
+- module-load v0.795 status 저장 삭제
+- 최종 수정본 paper --once 정상 종료
+- status version/build: paper v0.966 / v991
+- status owner paper_bot_single_status_writer_v991 / writer_count 1
+- status tmp 잔여 0
+- 전략·진입·청산·성과 membership·원본 원장 변경 없음
+- 자동매수 OFF
+
+판정: LOCAL PASS / 서버 runtime CHECK
